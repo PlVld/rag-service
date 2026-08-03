@@ -501,20 +501,20 @@ curl -X POST http://localhost:8000/v1/documents/search \
 4. Push в ветку (`git push origin feature/amazing-feature`)
 5. Откройте Pull Request
 
-Подробности в [CONTRIBUTING.md](docs/CONTRIBUTING.md) (если есть)
+Подробности в [CONTRIBUTING.md](docs/CONTRIBUTING.md)
 
 ---
 
 ## 👥 Авторы
 
-Разработано командой в [Ваша компания/Org]
+Разработано
 
-- [Your Name](https://github.com/YOUR_USERNAME) — Initial work
+- [PlVld](https://github.com/PlVld)
 
 ---
 
 ## 📬 Контакты
 
 - **Email**: your@email.com
-- **GitHub Issues**: [Открыть issue](https://github.com/YOUR_USERNAME/rag-service/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/YOUR_USERNAME/rag-service/discussions)
+- **GitHub Issues**: [Открыть issue](https://github.com/PlVld/rag-service/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/PlVld/rag-service/discussions)
