@@ -515,6 +515,5 @@ curl -X POST http://localhost:8000/v1/documents/search \
 
 ## 📬 Контакты
 
-- **Email**: your@email.com
 - **GitHub Issues**: [Открыть issue](https://github.com/PlVld/rag-service/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/PlVld/rag-service/discussions)
