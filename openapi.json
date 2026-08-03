@@ -1,0 +1,1581 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Universal Document Vector Search Service",
+    "description": "Микросервис для векторного поиска по документам с поддержкой метаданных, категорий и версионирования",
+    "version": "1.2.0"
+  },
+  "paths": {
+    "/v1/documents/upload": {
+      "post": {
+        "tags": [
+          "Documents"
+        ],
+        "summary": "Загрузка документов",
+        "description": "Загружает один или несколько текстовых документов в указанную коллекцию.\n\n**Параметры запроса:**\n- `documents` — массив документов, каждый с полями:\n  - `text` — текст документа (обязательно)\n  - `payload` — метаданные (source_format, author и т.д.)\n  - `category_path` — иерархия категорий, например `[\"Документация\", \"Инструкции\"]`\n  - `filename` — имя файла (для генерации `source_id`)\n  - `title` — заголовок документа (для генерации `source_id`)\n  - `version` — версия документа (по умолчанию 1)\n- `collection_name` — имя коллекции в Qdrant (обязательно)\n\n**Особенности:**\n- Автоматически вычисляет хеш документа\n- Проверяет дубликаты по `source_id` и `doc_hash`\n- Поддерживает иерархию категорий\n- Возвращает список созданных `ids` и общее количество загруженных чанков\n\nЕсли ни один документ не был изменён или добавлен, возвращается сообщение  \n`Нет новых или изменившихся документов для загрузки`.",
+        "operationId": "upload_documents_v1_documents_upload_post",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_documents_v1_documents_upload_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          },
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/v1/documents/search": {
+      "post": {
+        "tags": [
+          "Documents"
+        ],
+        "summary": "Поиск по документам",
+        "description": "Выполняет семантический поиск по тексту в документах.\n\n**Параметры запроса (в формате form-data или JSON body):**\n- `query_text` — текст запроса для поиска (обязательно при передаче через form-data)\n- `collection_name` — имя коллекции в Qdrant. Если не указано, поиск выполняется по всем коллекциям, кроме служебной коллекции категорий.\n- `limit` — максимальное количество результатов (1–1000, по умолчанию 10)\n- `filter` — условия фильтрации по полям payload (JSON-объект, передается как строка или объект). Параметр может называться `filter` или `filter_param` в зависимости от способа передачи.\n- `include_old_versions` — включать ли старые версии документов (по умолчанию false)\n- `max_text_length` — максимальная длина текста в результате (0 = без ограничений, по умолчанию 0)\n\n**Особенности:**\n- Использует векторное сопоставление для поиска релевантных чанков\n- Поддерживает фильтрацию по произвольным полям через `filter`\n- При наличии релевантных категорий применяется RRF-ранжирование (Reciprocal Rank Fusion)\n- **Пересчитывает score чанков через косинусное сходство с вектором запроса** для более точного ранжирования (reranking)\n- По умолчанию возвращает только актуальные версии (`is_latest=true`)\n- Если `max_text_length > 0`, текст будет обрезан до указанной длины\n\n**Алгоритм работы:**\n1. Выполняется RRF-поиск в указанной коллекции (или всех коллекциях, если `collection_name` не указан)\n2. **Чанки пересортировываются на основе косинусного сходства с вектором запроса** (reranking)\n\n**Преимущества reranking:**\n- Более точное ранжирование (настоящее косинусное сходство вместо RRF)\n- Возможность сравнения чанков из разных коллекций\n- Улучшение качества результатов при поиске по нескольким коллекциям\n\nВозвращает список найденных чанков с их `id`, `score` и исходным текстом.\n\n**Пример запроса (JSON body):**\n```json\n{\n  \"query_text\": \"Как настроить API?\",\n  \"collection_name\": \"documents_prod\",\n  \"limit\": 10,\n  \"filter\": {\"is_latest\": true},\n  \"include_old_versions\": false\n}\n```\n\n**Пример запроса (form-data):**\n```\nquery_text=Как настроить API?\ncollection_name=documents_prod\nlimit=10\nfilter={\"is_latest\": true}\ninclude_old_versions=false\n```\n\n**Пример ответа:**\n```json\n{\n  \"success\": true,\n  \"data\": {\n    \"results\": [\n      {\n        \"id\": \"uuid\",\n        \"score\": 0.95,\n        \"document\": \"Текст чанка...\",\n        \"payload\": {\n          \"source_id\": \"uuid\",\n          \"category_path\": \"Документация / API\",\n          \"is_latest\": true\n        }\n      }\n    ]\n  }\n}\n```",
+        "operationId": "search_documents_v1_documents_search_post",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_search_documents_v1_documents_search_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          },
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/v1/documents/grouped_search": {
+      "post": {
+        "tags": [
+          "Documents"
+        ],
+        "summary": "Группированный поиск по категориям",
+        "description": "Выполняет семантический поиск и группирует результаты по документам и их версиям.\n\n**Параметры запроса (в формате form-data или JSON body):**\n- `query_text` — текст запроса для поиска (обязательно при передаче через form-data)\n- `collection_name` — имя коллекции в Qdrant. Если не указано, поиск выполняется по всем коллекциям, кроме служебной коллекции категорий.\n- `limit` — максимальное количество результатов (1–1000, по умолчанию 10)\n- `filter` — условия фильтрации по полям payload (JSON-объект, передается как строка или объект). Параметр может называться `filter` или `filter_param` в зависимости от способа передачи.\n- `include_old_versions` — включать ли старые версии документов (по умолчанию false)\n- `max_text_length` — максимальная длина текста в результате (0 = без ограничений, по умолчанию 0)\n\n**Особенности:**\n- Группирует найденные чанки по `category_path` и `source_id`\n- Для каждой категории возвращает целостный фрагмент с соседними чанками\n- Поддерживает RRF-ранжирование с учётом категорий\n- **Пересчитывает score чанков через косинусное сходство с вектором запроса** для более точного ранжирования (reranking)\n- Возвращает историю версий документа\n- Если `max_text_length > 0`, текст будет обрезан до указанной длины\n\n**Алгоритм работы:**\n1. Выполняется RRF-поиск в указанных коллекциях\n2. Результаты объединяются и сортируются по RRF score\n3. **Чанки пересортировываются на основе косинусного сходства с вектором запроса** (reranking)\n4. Результаты группируются по category_path\n5. Для каждой категории строится полный контекст с соседними чанками\n\nИспользуется, когда нужен целостный контекст документа, а не отдельные фрагменты.\n\n**Преимущества reranking:**\n- Более точное ранжирование (настоящее косинусное сходство вместо RRF)\n- Возможность сравнения чанков из разных коллекций\n- Улучшение качества результатов при поиске по нескольким коллекциям\n\n**Пример запроса (JSON body):**\n```json\n{\n  \"query_text\": \"Как настроить API?\",\n  \"limit\": 10,\n  \"filter\": {\"source_format\": \"markdown\"},\n  \"include_old_versions\": false\n}\n```\n\n**Пример запроса (form-data):**\n```\nquery_text=Как настроить API?\nlimit=10\nfilter={\"source_format\": \"markdown\"}\ninclude_old_versions=false\n```\n\n**Пример ответа:**\n```json\n{\n  \"success\": true,\n  \"data\": {\n    \"results\": [\n      {\n        \"source_id\": \"uuid\",\n        \"category_path\": \"Документация / API\",\n        \"original_filename\": \"api_guide.md\",\n        \"content_type\": \"markdown\",\n        \"collection_name\": \"documents\",\n        \"score\": 0.87,\n        \"chunk_score\": 0.82,\n        \"versions\": [\n          {\n            \"version\": 1,\n            \"raw_text\": \"Текст документа...\",\n            \"is_latest\": true,\n            \"total_chunks\": 3,\n            \"first_chunk_index\": 0,\n            \"last_chunk_index\": 2\n          }\n        ]\n      }\n    ]\n  }\n}\n```",
+        "operationId": "grouped_search_documents_v1_documents_grouped_search_post",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_grouped_search_documents_v1_documents_grouped_search_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          },
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/v1/categories/search": {
+      "post": {
+        "tags": [
+          "Categories"
+        ],
+        "summary": "Поиск по категориям",
+        "description": "Выполняет семантический поиск по иерархии категорий.\n\n**Параметры запроса (в JSON body):**\n- `query_text` — текст запроса для поиска (обязательно)\n- `limit` — максимальное количество результатов (1–100, по умолчанию 10)\n- `grouped` — если `true`, возвращает категории, сгруппированные по коллекциям (по умолчанию `false`)\n- `fields` — список полей для возврата (опционально). Если не указан, возвращаются только `path` и `score`.\n\n**Доступные поля для `fields`:**\n- `path` — полный путь категории\n- `score` — релевантность категории\n- `id` — идентификатор категории\n- `category_name` — название категории\n- `categories` — список категорий в пути\n- `category_level` — уровень вложенности\n- `category_id` — идентификатор категории\n- `levels.category_level0`, `levels.category_level1`, ... — уровни категорий\n- `id_levels.category_id_level0`, `id_levels.category_id_level1`, ... — идентификаторы уровней\n\n**Формат запроса (минимальный):**\n```json\n{\n  \"query_text\": \"документация API\",\n  \"limit\": 10\n}\n```\n\n**Формат ответа (по умолчанию - только path и score):**\n```json\n{\n  \"results\": [\n    {\"path\": \"Документация / API\", \"score\": 0.95},\n    {\"path\": \"Документация / Настройка\", \"score\": 0.87}\n  ]\n}\n```\n\n**Формат запроса (с полями):**\n```json\n{\n  \"query_text\": \"документация API\",\n  \"limit\": 10,\n  \"fields\": [\"path\", \"score\", \"category_name\"]\n}\n```\n\n**Формат ответа (с полями):**\n```json\n{\n  \"results\": [\n    {\n      \"path\": \"Документация / API\",\n      \"score\": 0.95,\n      \"category_name\": \"API\"\n    }\n  ]\n}\n```\n\n**Группировка по коллекциям:**\nКогда параметр `grouped=true`, результат возвращается в формате:\n```json\n{\n  \"results\": {\n    \"documents\": [\n      {\"path\": \"Документация / API\", \"score\": 0.95}\n    ],\n    \"documents_archive\": [\n      {\"path\": \"Архив / Справочник\", \"score\": 0.75}\n    ]\n  }\n}\n```\n\n**Особенности:**\n- Использует векторное сопоставление для поиска релевантных категорий\n- Возвращает полный путь категории (`category_path`) и уровень вложенности\n- **По умолчанию возвращает только `path` и `score`** для оптимизации производительности\n- При необходимости можно получить полную информацию, указав поля в `fields`\n- Результаты можно сгруппировать по коллекциям с помощью параметра `grouped`\n\nИспользуется для улучшения поиска документов через RRF-ранжирование, учитывая релевантность категорий.",
+        "operationId": "search_categories_endpoint_v1_categories_search_post",
+        "security": [
+          {
+            "APIKeyHeader": []
+          },
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "grouped",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Если True, возвращает категории, сгруппированные по коллекциям",
+              "default": false,
+              "title": "Grouped"
+            },
+            "description": "Если True, возвращает категории, сгруппированные по коллекциям"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CategorySearchRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/categories": {
+      "get": {
+        "tags": [
+          "Categories"
+        ],
+        "summary": "Получение всех категорий",
+        "description": "Возвращает список всех категорий из базы данных.\n\n**Параметры:**\n- `limit` — максимальное количество результатов (1–1000, по умолчанию 100)\n- `parent_id` — фильтр по родительской категории (опционально)\n\n**Формат ответа:**\n- Массив объектов `CategoryResponse` с информацией о каждой категории.",
+        "operationId": "get_all_categories_v1_categories_get",
+        "security": [
+          {
+            "APIKeyHeader": []
+          },
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000,
+              "minimum": 1,
+              "description": "Максимальное количество результатов (1-1000)",
+              "examples": [
+                50
+              ],
+              "default": 100,
+              "title": "Limit"
+            },
+            "description": "Максимальное количество результатов (1-1000)"
+          },
+          {
+            "name": "parent_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Фильтр по родительской категории",
+              "examples": [
+                "uuid-категории-родителя"
+              ],
+              "title": "Parent Id"
+            },
+            "description": "Фильтр по родительской категории"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/files/upload/batch": {
+      "post": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Пакетная загрузка файлов",
+        "description": "Загружает несколько файлов одновременно.\n\n**Параметры:**\n- `files` – массив файлов (поддерживаются `.txt`, `.pdf`, `.docx`, `.doc`, `.html`, `.htm`, `.md`)\n- `collection_name` – имя коллекции в Qdrant\n- `skip_if_exists` – пропускать уже существующие файлы (по умолчанию `false`)\n- `metadata` – JSON-массив объектов, каждый объект соответствует файлу в том же порядке.\n\n**Формат metadata:**\n\n```json\n[\n  {\"source_id\": \"id1\", \"source_format\": \"pdf\", \"category_path\": [\"Категория1\"]},\n  {\"source_id\": \"id2\", \"source_format\": \"txt\", \"category_path\": [\"Категория2\"]}\n]\n```\n\nКаждый объект может содержать поля:\n- `source_id` (опц.) – идентификатор источника\n- `file_path` (опц.) – путь к файлу (для метаданных)\n- `source_format` (опц.) – формат (`pdf`, `text`, ...)\n- `category_path` (опц.) – массив категорий\n\n**Результат:** массив объектов с информацией о каждом файле (`status`, `version`, `chunk_ids` и т.д.).",
+        "operationId": "upload_files_batch_v1_files_upload_batch_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_files_batch_v1_files_upload_batch_post",
+                "properties": {
+                  "files": {
+                    "items": {
+                      "type": "string",
+                      "format": "binary"
+                    },
+                    "type": "array",
+                    "description": "Выберите один или несколько файлов"
+                  },
+                  "collection_name": {
+                    "type": "string",
+                    "description": "Имя коллекции в Qdrant",
+                    "example": "documents"
+                  },
+                  "skip_if_exists": {
+                    "type": "boolean",
+                    "description": "Пропустить файл, если он уже существует (по хешу)",
+                    "default": false
+                  },
+                  "metadata": {
+                    "type": "string",
+                    "description": "JSON-массив метаданных для каждого файла",
+                    "example": "[{\"source_format\":\"pdf\"},{\"source_format\":\"text\"}]"
+                  }
+                },
+                "type": "object",
+                "required": [
+                  "files",
+                  "collection_name",
+                  "metadata"
+                ]
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          },
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/v1/files/upload": {
+      "post": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Загрузка одного файла",
+        "description": "Загружает один файл (PDF, текст и др.) в указанную коллекцию.\n\nПоддерживает версионность: если файл с таким же содержимым уже существует, он не перезаписывается.  \nЕсли содержимое изменилось — создаётся новая версия.\n\nЕсли `skip_if_exists=true` и файл уже есть, возвращается статус `skipped`.  \nЕсли `source_id` не указан, он генерируется на основе `category_path` и имени файла.\n\n**Особенности:**\n- Автоматически вычисляет SHA256-хеш\n- Проверяет дубликаты по `source_id` и `doc_hash`\n- Поддерживает иерархию категорий\n- Возвращает `source_id`, `version`, `status` (`created`/`updated`/`skipped`)",
+        "operationId": "upload_file_v1_files_upload_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_file_v1_files_upload_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          },
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/v1/files/preview/md": {
+      "post": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Проверка конвертации файла в Markdown",
+        "description": "Принимает файл и возвращает raw_text (Markdown) до разбиения на чанки и без загрузки в Qdrant.",
+        "operationId": "preview_file_markdown_v1_files_preview_md_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_preview_file_markdown_v1_files_preview_md_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          },
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/v1/files/preview/md/text": {
+      "post": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Проверка конвертации файла в Markdown (plain text)",
+        "description": "Возвращает raw_text как text/markdown, чтобы переносы строк отображались без экранирования JSON.",
+        "operationId": "preview_file_markdown_text_v1_files_preview_md_text_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_preview_file_markdown_text_v1_files_preview_md_text_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          },
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/hnsw": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Включить/выключить HNSW-индекс",
+        "description": "Включает или выключает HNSW-индексацию для указанной коллекции.\n\nКак использовать:\n- **Выключить** HNSW (ускоряет массовую загрузку): `enabled=false` (эквивалент `m=0`)\n- **Включить** HNSW (ускоряет поиск): `enabled=true` и задать `m` (обычно 16)\n\nПараметр `m` определяет количество связей между узлами (чем больше, тем выше качество/память).\nHNSW (Hierarchical Navigable Small World) — индекс для ускорения поиска по векторам в Qdrant.",
+        "operationId": "set_hnsw_v1_admin_hnsw_post",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_set_hnsw_v1_admin_hnsw_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          },
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/create_payload_index": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Создать индекс для поля payload",
+        "description": "Создаёт индекс для указанного поля в payload коллекции.\n\n**Поддерживаемые типы:** `keyword`, `integer`, `float`, `geo`.\n\nИндексация ускоряет фильтрацию при поиске (например, по `source_id`, `category_path`).\nРекомендуется индексировать поля, по которым часто выполняется фильтрация.",
+        "operationId": "create_payload_index_v1_admin_create_payload_index_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PayloadIndexRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          },
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/collections": {
+      "get": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Get Collections With Categories",
+        "operationId": "get_collections_with_categories_v1_admin_collections_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionsWithCategoriesResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          },
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/categories/hierarchy": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Иерархия категорий с количеством чанков",
+        "description": "Возвращает категории с количеством чанков для указанной коллекции.\n\n**Параметры:**\n- `collection_name`: имя коллекции (опционально, если не указан - возвращает категории для всех коллекций)\n- `depth`: количество уровней для получения (0, 1-10)\n  - `0` - только список коллекций без категорий\n  - `1-10` - иерархия категорий (максимум 10 уровней)\n- `categories`: массив полных путей категорий (опционально)\n  - Если указаны - возвращает только коллекции, содержащие эти категории\n  - Если не указаны - возвращает все категории для указанных/всех коллекций\n\n**Логика:**\n- Если `categories` не указаны и `depth=0` - возвращает список коллекций без категорий\n- Если `categories` не указаны и `depth>0` - возвращает первые `depth` уровней\n- Если `categories` указаны - для каждого пути возвращает `depth` вложенных уровней\n- Если указана `collection_name` и она не существует - возвращает ошибку 404\n\n**Пример ответа (depth=1, categories не указаны):**\n```json\n{\n  \"results\": [\n    {\"name\": \"collection1\", \"categories\": [\n      {\"category_path\": \"Docs\", \"chunk_count\": 150},\n      {\"category_path\": \"API\", \"chunk_count\": 50}\n    ]}\n  ]\n}\n```\n\n**Пример ответа (depth=0):**\n```json\n{\n  \"results\": [\n    {\"name\": \"collection1\", \"categories\": []},\n    {\"name\": \"collection2\", \"categories\": []}\n  ]\n}\n```\n\n**Пример ответа (categories указанны, несуществующая категория):**\n```json\n{\n  \"results\": []\n}\n```\n\n**Ошибки:**\n- 404 - коллекция не найдена (если указана `collection_name`)\n- 422 - неверные параметры (например, `depth > 10`)",
+        "operationId": "get_category_hierarchy_v1_admin_categories_hierarchy_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CategoryHierarchyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CategoryHierarchyResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          },
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/mcp": {
+      "get": {
+        "summary": " Forward Request To Subapp",
+        "operationId": "_forward_request_to_subapp_mcp_delete",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": " Forward Request To Subapp",
+        "operationId": "_forward_request_to_subapp_mcp_delete",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": " Forward Request To Subapp",
+        "operationId": "_forward_request_to_subapp_mcp_delete",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "options": {
+        "summary": " Forward Request To Subapp",
+        "operationId": "_forward_request_to_subapp_mcp_delete",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "head": {
+        "summary": " Forward Request To Subapp",
+        "operationId": "_forward_request_to_subapp_mcp_delete",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/mcp/": {
+      "get": {
+        "summary": " Forward Request To Subapp",
+        "operationId": "_forward_request_to_subapp_mcp__delete",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": " Forward Request To Subapp",
+        "operationId": "_forward_request_to_subapp_mcp__delete",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": " Forward Request To Subapp",
+        "operationId": "_forward_request_to_subapp_mcp__delete",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "options": {
+        "summary": " Forward Request To Subapp",
+        "operationId": "_forward_request_to_subapp_mcp__delete",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "head": {
+        "summary": " Forward Request To Subapp",
+        "operationId": "_forward_request_to_subapp_mcp__delete",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/mcp/rpc": {
+      "get": {
+        "summary": " Forward Request To Subapp",
+        "operationId": "_forward_request_to_subapp_mcp_rpc_delete",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": " Forward Request To Subapp",
+        "operationId": "_forward_request_to_subapp_mcp_rpc_delete",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": " Forward Request To Subapp",
+        "operationId": "_forward_request_to_subapp_mcp_rpc_delete",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "options": {
+        "summary": " Forward Request To Subapp",
+        "operationId": "_forward_request_to_subapp_mcp_rpc_delete",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "head": {
+        "summary": " Forward Request To Subapp",
+        "operationId": "_forward_request_to_subapp_mcp_rpc_delete",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/mcp/rpc/": {
+      "get": {
+        "summary": " Forward Request To Subapp",
+        "operationId": "_forward_request_to_subapp_mcp_rpc__delete",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": " Forward Request To Subapp",
+        "operationId": "_forward_request_to_subapp_mcp_rpc__delete",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": " Forward Request To Subapp",
+        "operationId": "_forward_request_to_subapp_mcp_rpc__delete",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "options": {
+        "summary": " Forward Request To Subapp",
+        "operationId": "_forward_request_to_subapp_mcp_rpc__delete",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "head": {
+        "summary": " Forward Request To Subapp",
+        "operationId": "_forward_request_to_subapp_mcp_rpc__delete",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/": {
+      "get": {
+        "summary": "Root",
+        "operationId": "root__get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Body_grouped_search_documents_v1_documents_grouped_search_post": {
+        "properties": {
+          "query_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query Text"
+          },
+          "collection_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Collection Name"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "default": 10
+          },
+          "filter_param": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filter Param",
+            "description": "Фильтр по полям `payload` (строкой в формате JSON-объекта). Семантика — точное совпадение значения поля (MatchValue).\n\nПримеры:\n- `{\"source_format\":\"pdf\"}`\n- `{\"category_level\":1,\"category_level0\":\"Документация\"}`\n- `{\"original_filename\":\"report.docx\"}`\n\nТиповые поля, которые встречаются в `payload`:\n- `source_format`, `content_type`, `original_filename`, `file_path`\n- `source_id`, `version`, `is_latest`, `doc_hash`\n- `category_path` (строка вида `A / B / C`)\n- `category_level0..N`, `category_id_level0..N`, `category_level`\n\nВажно: если `include_old_versions=false`, сервис дополнительно ограничит поиск `is_latest=true`."
+          },
+          "include_old_versions": {
+            "type": "boolean",
+            "title": "Include Old Versions",
+            "default": false
+          },
+          "max_text_length": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Max Text Length",
+            "description": "Максимальная длина текста в результате (0 или не передано = без ограничений). Если задано положительное число, текст будет обрезан до указанной длины.",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "Body_grouped_search_documents_v1_documents_grouped_search_post"
+      },
+      "Body_preview_file_markdown_text_v1_files_preview_md_text_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_preview_file_markdown_text_v1_files_preview_md_text_post"
+      },
+      "Body_preview_file_markdown_v1_files_preview_md_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_preview_file_markdown_v1_files_preview_md_post"
+      },
+      "Body_search_documents_v1_documents_search_post": {
+        "properties": {
+          "query_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query Text"
+          },
+          "collection_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Collection Name"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "default": 10
+          },
+          "filter_param": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filter Param",
+            "description": "Фильтр по полям `payload` (строкой в формате JSON-объекта). Семантика — точное совпадение значения поля (MatchValue).\n\nПримеры:\n- `{}`\n- `{\"source_format\":\"text\"}`\n- `{\"is_latest\":true}`\n- `{\"source_id\":\"<uuid>\"}`\n- `{\"version\":2}`\n- `{\"original_filename\":\"manual.pdf\"}`\n\nТиповые поля, которые встречаются в `payload`:\n- `source_format`, `content_type`, `original_filename`, `file_path`\n- `source_id`, `version`, `is_latest`, `doc_hash`\n- `category_path` (строка вида `A / B / C`)\n- `category_level0..N`, `category_id_level0..N`, `category_level`\n\nВажно: если `include_old_versions=false`, сервис дополнительно ограничит поиск `is_latest=true`."
+          },
+          "include_old_versions": {
+            "type": "boolean",
+            "title": "Include Old Versions",
+            "default": false
+          },
+          "max_text_length": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Max Text Length",
+            "description": "Максимальная длина текста в результате (0 или не передано = без ограничений). Если задано положительное число, текст будет обрезан до указанной длины.",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "Body_search_documents_v1_documents_search_post"
+      },
+      "Body_set_hnsw_v1_admin_hnsw_post": {
+        "properties": {
+          "collection_name": {
+            "type": "string",
+            "title": "Collection Name",
+            "description": "Имя коллекции"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "description": "Включить (true) или выключить (false) HNSW"
+          },
+          "m": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "M",
+            "description": "Параметр HNSW m (используется только при enabled=true)",
+            "default": 16
+          }
+        },
+        "type": "object",
+        "required": [
+          "collection_name",
+          "enabled"
+        ],
+        "title": "Body_set_hnsw_v1_admin_hnsw_post"
+      },
+      "Body_upload_documents_v1_documents_upload_post": {
+        "properties": {
+          "documents": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Documents",
+            "description": "JSON-массив документов (строкой). Если не передан, можно отправить обычное JSON-тело запроса."
+          },
+          "collection_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Collection Name",
+            "description": "Имя коллекции. Если не передано, можно отправить обычное JSON-тело запроса."
+          }
+        },
+        "type": "object",
+        "title": "Body_upload_documents_v1_documents_upload_post"
+      },
+      "Body_upload_file_v1_files_upload_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "title": "File"
+          },
+          "collection_name": {
+            "type": "string",
+            "title": "Collection Name"
+          },
+          "source_format": {
+            "type": "string",
+            "title": "Source Format"
+          },
+          "source_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Id"
+          },
+          "file_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Path"
+          },
+          "category_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category Path"
+          },
+          "skip_if_exists": {
+            "type": "boolean",
+            "title": "Skip If Exists",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "file",
+          "collection_name",
+          "source_format"
+        ],
+        "title": "Body_upload_file_v1_files_upload_post"
+      },
+      "Body_upload_files_batch_v1_files_upload_batch_post": {
+        "properties": {
+          "files": {
+            "items": {
+              "type": "string",
+              "format": "binary"
+            },
+            "type": "array",
+            "title": "Files"
+          },
+          "collection_name": {
+            "type": "string",
+            "title": "Collection Name"
+          },
+          "skip_if_exists": {
+            "type": "boolean",
+            "title": "Skip If Exists",
+            "default": false
+          },
+          "metadata": {
+            "type": "string",
+            "title": "Metadata"
+          }
+        },
+        "type": "object",
+        "required": [
+          "files",
+          "collection_name",
+          "metadata"
+        ],
+        "title": "Body_upload_files_batch_v1_files_upload_batch_post"
+      },
+      "CategoryChunkCount": {
+        "properties": {
+          "category_path": {
+            "type": "string",
+            "title": "Category Path"
+          },
+          "chunk_count": {
+            "type": "integer",
+            "title": "Chunk Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "category_path",
+          "chunk_count"
+        ],
+        "title": "CategoryChunkCount"
+      },
+      "CategoryHierarchyRequest": {
+        "properties": {
+          "collection_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Collection Name",
+            "description": "Имя коллекции (опционально)"
+          },
+          "depth": {
+            "type": "integer",
+            "maximum": 10.0,
+            "minimum": 0.0,
+            "title": "Depth",
+            "description": "Количество уровней для получения (0 - только список коллекций без категорий, 1-10 - иерархия категорий). Максимальное значение: 10.",
+            "default": 0
+          },
+          "categories": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Categories",
+            "description": "Массив полных путей категорий (опционально). Если указаны, возвращаются только коллекции с этими категориями."
+          }
+        },
+        "type": "object",
+        "title": "CategoryHierarchyRequest"
+      },
+      "CategoryHierarchyResponse": {
+        "properties": {
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/CollectionCategoryHierarchy"
+            },
+            "type": "array",
+            "title": "Results"
+          }
+        },
+        "type": "object",
+        "required": [
+          "results"
+        ],
+        "title": "CategoryHierarchyResponse"
+      },
+      "CategorySearchRequest": {
+        "properties": {
+          "query_text": {
+            "type": "string",
+            "title": "Query Text",
+            "description": "Текст запроса для поиска по категориям",
+            "examples": [
+              "Документация по API"
+            ]
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "description": "Максимальное количество результатов (1-100)",
+            "default": 10,
+            "examples": [
+              10
+            ]
+          },
+          "grouped": {
+            "type": "boolean",
+            "title": "Grouped",
+            "description": "Если True, возвращает категории, сгруппированные по коллекциям",
+            "default": false,
+            "examples": [
+              false
+            ]
+          },
+          "fields": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fields",
+            "description": "Список полей для возврата. Если не указан, возвращаются только `path` и `score`. Доступные поля: `id`, `score`, `category_name`, `category_path`, `categories`, `category_level`, `category_id`, `levels`, `id_levels`.",
+            "examples": [
+              [
+                "path",
+                "score"
+              ]
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "query_text"
+        ],
+        "title": "CategorySearchRequest"
+      },
+      "CollectionCategories": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "categories": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Categories"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "categories"
+        ],
+        "title": "CollectionCategories"
+      },
+      "CollectionCategoryHierarchy": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "categories": {
+            "items": {
+              "$ref": "#/components/schemas/CategoryChunkCount"
+            },
+            "type": "array",
+            "title": "Categories"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "categories"
+        ],
+        "title": "CollectionCategoryHierarchy"
+      },
+      "CollectionsWithCategoriesResponse": {
+        "properties": {
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/CollectionCategories"
+            },
+            "type": "array",
+            "title": "Results"
+          }
+        },
+        "type": "object",
+        "required": [
+          "results"
+        ],
+        "title": "CollectionsWithCategoriesResponse"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "PayloadIndexRequest": {
+        "properties": {
+          "collection_name": {
+            "type": "string",
+            "title": "Collection Name"
+          },
+          "field_name": {
+            "type": "string",
+            "title": "Field Name"
+          },
+          "field_type": {
+            "$ref": "#/components/schemas/PayloadSchemaType",
+            "default": "keyword"
+          }
+        },
+        "type": "object",
+        "required": [
+          "collection_name",
+          "field_name"
+        ],
+        "title": "PayloadIndexRequest"
+      },
+      "PayloadSchemaType": {
+        "type": "string",
+        "enum": [
+          "keyword",
+          "integer",
+          "float",
+          "geo",
+          "text",
+          "bool",
+          "datetime",
+          "uuid"
+        ],
+        "title": "PayloadSchemaType",
+        "description": "All possible names of payload types"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    },
+    "securitySchemes": {
+      "APIKeyHeader": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Api-Key"
+      },
+      "HTTPBearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  }
+}

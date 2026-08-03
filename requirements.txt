@@ -1,0 +1,46 @@
+fastapi>=0.135.1
+uvicorn[standard]==0.41.0
+pydantic>=2.12.5
+pydantic-settings>=2.13.1
+qdrant-client[fastembed-gpu]>=1.17.1
+python-dotenv>=1.0.0
+langchain>=0.1.0
+langchain-text-splitters>=1.1.1
+html2text>=2020.1.16
+mdclense>=0.1.0
+ru-text-cleaner>=0.1.4
+MarkdownParser>=0.5.39
+aiofiles==25.1.0
+pymorphy2>=0.9.1
+pymorphy2-dicts-ru>=2.4.417127.0
+dawg-python>=0.7.2
+emoji>=2.8.0
+stop-words>=2018.7.23
+python-multipart>=0.0.9
+python-docx>=0.8.11          # для DOCX и DOC
+pypdf>=3.17.0                # для PDF
+beautifulsoup4>=4.12.0       # для HTML
+lxml>=4.9.0                  # для быстрого парсинга HTML
+pdf2image>=1.16.0
+pytesseract>=0.3.10
+Pillow>=10.0.0
+sentence_transformers>=5.3.0
+transformers>=5.3.0
+einops>=0.8.0
+mcp>=1.27.0
+fastapi-mcp>=0.4.0
+pandas>=2.0.0               # для конвертации XLSX в Markdown
+numpy>=1.24.0               # для операций с векторами (reranking)
+#fastmcp>=3.1.0
+pdfplumber>=0.11.0           # для извлечения текста и таблиц из PDF
+python-magic>=0.4.27         # для определения MIME-type по сигнатурам
+python-magic-bin>=0.4.14; sys_platform == "win32"  # libmagic для Windows (не нужен в Linux/Docker)
+docling>=2.0.0               # для конвертации документов в Markdown с распознаванием изображений
+starlette>=0.41.0            # для middlewares и lifespan events
+
+# Для CPU-only развертывания (без CUDA)
+# Используем cpuonly мета-пакет для автоматической установки CPU-версии PyTorch
+torch==2.6.0+cpu
+torchvision==0.21.0+cpu
+torchaudio==2.6.0
+--extra-index-url https://download.pytorch.org/whl/cpu

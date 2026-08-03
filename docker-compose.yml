@@ -1,0 +1,50 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    expose:
+      - "6333"
+      - "6334"
+    volumes:
+      - ./qdrant_data:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__TELEMETRY_DISABLED=true
+      - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:-}
+    networks:
+      - dds_network
+    restart: unless-stopped
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: dds-app:latest
+    ports:
+      - "${SERVICE_PORT:-8000}:${SERVICE_PORT:-8000}"
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+      - SERVICE_PORT=${SERVICE_PORT:-8000}
+      - SERVICE_HOST=0.0.0.0
+    env_file:
+      - .env
+    volumes:
+      - ./uploads:/app/uploads
+      - ./model_cache:/app/model_cache
+    depends_on:
+      - qdrant
+    networks:
+      - dds_network
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+networks:
+  dds_network:
+    driver: bridge

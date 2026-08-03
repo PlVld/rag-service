@@ -1,0 +1,98 @@
+# =============================================================================
+# CPU-only сборка RAG Service
+# Содержит: бинарные файлы приложения + models (bge-m3, docling)
+#
+# Использование:
+#   docker build -f Dockerfile.cpu -t dds-app-cpu:latest .
+#   docker save dds-app-cpu:latest -o distrib/docker-images/dds-app-cpu_latest.tar
+# =============================================================================
+
+FROM python:3.11-slim AS model-downloader
+
+# Настройка переменных для офлайн-режима
+ENV HF_HUB_OFFLINE=1
+ENV TRANSFORMERS_OFFLINE=1
+
+# Загружаем модель bge-m3
+RUN pip install --no-cache-dir sentence-transformers transformers huggingface_hub
+RUN python -c "from sentence_transformers import SentenceTransformer; model = SentenceTransformer('BAAI/bge-m3', local_files_only=False)"
+
+# =============================================================================
+# Этап 1: Сборщик зависимостей (CPU-only)
+# =============================================================================
+FROM python:3.11-slim AS builder
+
+# Установка системных зависимостей для компиляции
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Установка CPU-версии PyTorch (на ~2 ГБ меньше)
+COPY requirements-cpu.txt .
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements-cpu.txt
+
+# =============================================================================
+# Этап 2: Финальный образ
+# =============================================================================
+FROM python:3.11-slim
+
+LABEL maintainer="rag-service"
+LABEL description="RAG Service CPU-only (embedded bge-m3 + docling models)"
+
+# Установка системных зависимостей для OCR и обработки документов
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 \
+    libglib2.0-0 \
+    libgomp1 \
+    libmagic1 \
+    poppler-utils \
+    tesseract-ocr \
+    tesseract-ocr-rus \
+    && rm -rf /var/lib/apt/lists/*
+
+# Копирование установленных пакетов из builder
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+
+# Копирование модели bge-m3 из model-downloader
+COPY --from=model-downloader /root/.cache/huggingface/hub /app/model_cache/hub
+
+# Копирование docling моделей (если скопированы в образ при сборке)
+# RUN mkdir -p /app/docling_cache 2>/dev/null || true
+# COPY docling_cache/ /app/docling_cache/ 2>/dev/null || true
+
+WORKDIR /app
+
+# Создаём пустые директории для моделей
+RUN mkdir -p /app/model_cache /app/docling_cache /app/uploads
+
+# Копирование исходного кода
+COPY ./app /app/app
+
+# Переменные окружения для кэша моделей.
+ENV HF_HOME=/app/model_cache
+ENV TRANSFORMERS_CACHE=/app/model_cache
+ENV SENTENCE_TRANSFORMERS_HOME=/app/model_cache
+ENV HF_HUB_OFFLINE=1
+
+# Переменные для Docling моделей
+ENV DOCLING_MODELS_PATH=/app/docling_cache
+
+# Переменная окружения для poppler (Linux)
+ENV POPPLER_PATH=/usr/bin
+
+# Порт сервиса
+ENV SERVICE_PORT=8000
+ENV SERVICE_HOST=0.0.0.0
+
+EXPOSE 8000
+
+# healthcheck
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+
+# Запуск приложения
+CMD ["sh", "-c", "uvicorn app.main:app --host $SERVICE_HOST --port $SERVICE_PORT"]
