@@ -108,7 +108,7 @@
 
 ```bash
 # 1. Клонируйте репозиторий
-git clone https://github.com/YOUR_USERNAME/rag-service.git
+git clone https://github.com/PlVld/rag-service.git
 cd rag-service
 
 # 2. Настройте переменные окружения
