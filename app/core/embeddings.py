@@ -17,8 +17,6 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 
 # Полностью отключаем все сетевые функции Hugging Face
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"  # Без прогресс-баров
-os.environ["HF_HUB_OFFLINE"] = "1"           # Только офлайн-режим
-os.environ["TRANSFORMERS_OFFLINE"] = "1"     # Отключаем сетевые запросы в transformers
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"  # Подавляем предупреждения
 os.environ["HF_TOKEN"] = ""                    # Пустой токен, чтобы не пытался аутентифицироваться
 
@@ -39,21 +37,112 @@ TASK_MAP = {
 }
 
 
-@lru_cache(maxsize=1)
-def get_embedding_model() -> SentenceTransformer:
-    """Загружает и кэширует модель эмбеддингов."""
+def _check_model_exists(model_name: str) -> bool:
+    """Проверяет наличие модели в кэше."""
+    model_dir = os.path.join(CACHE_DIR, "models--" + model_name.replace("/", "--"))
+    if not os.path.exists(model_dir):
+        return False
+    
+    # Проверяем наличие blobs (тяжёлые файлы модели)
+    blobs_dir = os.path.join(model_dir, "blobs")
+    if not os.path.exists(blobs_dir):
+        return False
+    
+    # Проверяем, не пустой ли blobs
+    try:
+        if not os.listdir(blobs_dir):
+            return False
+    except OSError:
+        return False
+    
+    # Проверяем наличие snapshots (загруженных файлов модели)
+    snapshots_dir = os.path.join(model_dir, "snapshots")
+    if not os.path.exists(snapshots_dir):
+        return False
+    
+    # Проверяем, есть ли хотя бы один файл модели в снапшотах
+    for root, dirs, files in os.walk(snapshots_dir):
+        for f in files:
+            if f in ["model.safetensors", "pytorch_model.bin", "model.safetensors.index.json", "config.json"]:
+                return True
+    return False
+
+
+def initialize_model(online: bool = False) -> SentenceTransformer:
+    """
+    Инициализирует и кэширует модель эмбеддингов при старте.
+    
+    Args:
+        online: Если True, загружает модель из интернета если её нет в кэше
+    
+    Returns:
+        SentenceTransformer: Загруженная модель
+    
+    Raises:
+        RuntimeError: Если модель не найдена в кэше и online=False
+    """
+    model_name = settings.embedding_model
+    model_path = os.path.join(CACHE_DIR, "models--" + model_name.replace("/", "--"))
+    
+    logger.info(f"Checking model cache: {model_path}")
+    
+    if _check_model_exists(model_name):
+        logger.info("Model found in cache. Loading...")
+        return _load_model(offline=True)
+    
+    if not online:
+        raise RuntimeError(
+            f"Model not found in cache: {model_path}. "
+            f"Please run with online=True once to download, or set HF_HUB_OFFLINE=0 and restart."
+        )
+    
+    logger.info("Model not found in cache. Downloading from Hugging Face...")
+    logger.info(f"Cache directory: {CACHE_DIR}")
+    
+    # Временно включаем онлайн режим для загрузки
+    old_offline = os.environ.get("HF_HUB_OFFLINE", "0")
+    old_transformers_offline = os.environ.get("TRANSFORMERS_OFFLINE", "0")
+    
+    try:
+        os.environ["HF_HUB_OFFLINE"] = "0"
+        os.environ["TRANSFORMERS_OFFLINE"] = "0"
+        
+        logger.info("Downloading model (this may take a while)...")
+        model = _load_model(offline=False)
+        
+        logger.info("Model downloaded and cached successfully!")
+        return model
+    except Exception as e:
+        logger.error(f"Failed to download model: {e}")
+        raise
+    finally:
+        # Восстанавливаем офлайн режим
+        os.environ["HF_HUB_OFFLINE"] = old_offline
+        os.environ["TRANSFORMERS_OFFLINE"] = old_transformers_offline
+
+
+def _load_model(offline: bool = True) -> SentenceTransformer:
+    """Внутренняя функция загрузки модели."""
     use_gpu = settings.use_gpu and torch.cuda.is_available()
     device = "cuda" if use_gpu else "cpu"
     load_start = time.time()
+    
+    if offline:
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    else:
+        os.environ["HF_HUB_OFFLINE"] = "0"
+        os.environ["TRANSFORMERS_OFFLINE"] = "0"
+    
     logger.info(f"Loading embedding model on {device}: {settings.embedding_model}")
     logger.info(f"Model cache directory: {CACHE_DIR}")
-    logger.info(f"Offline mode: {os.environ.get('HF_HUB_OFFLINE', '0')}")
+    logger.info(f"Offline mode: {offline}")
 
     try:
         # Исправленная конфигурация для загрузки модели
         model_kwargs = {
             "trust_remote_code": True,
-            "local_files_only": True,  # Важно для офлайн-режима
+            "local_files_only": offline,  # Важно для офлайн-режима
             "revision": None,
         }
 
@@ -64,8 +153,8 @@ def get_embedding_model() -> SentenceTransformer:
         model = SentenceTransformer(
             settings.embedding_model,
             device=device,
-            cache_folder=CACHE_DIR,  # ИСПРАВЛЕНО: было cache_dir
-            model_kwargs=model_kwargs,  # Передаем доп. параметры через model_kwargs
+            cache_folder=CACHE_DIR,
+            model_kwargs=model_kwargs,
         )
         load_time = time.time() - load_start
         logger.info(f"[PERF] Model loaded in {load_time:.3f}s")
@@ -82,6 +171,12 @@ def get_embedding_model() -> SentenceTransformer:
             logger.warning(f"Model directory exists but no snapshots found: {model_path}")
 
         raise RuntimeError(f"Failed to load model from cache even though path exists: {model_path}") from e
+
+
+@lru_cache(maxsize=1)
+def get_embedding_model() -> SentenceTransformer:
+    """Загружает и кэширует модель эмбеддингов (использует кэш)."""
+    return _load_model(offline=True)
 
 def _encode_batch_sync(
     model: SentenceTransformer,

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import time
 import uvicorn
@@ -5,7 +6,7 @@ import json
 from fastapi import FastAPI, Request
 from pydantic import ValidationError
 from app.api.health import get_client
-from fastapi_mcp import FastApiMCP
+
 from starlette.middleware.base import BaseHTTPMiddleware
 from app.api import documents, health, categories, files, admin
 from app.core.config import settings
@@ -221,17 +222,11 @@ app.add_middleware(MCPNormalizeHeadersMiddleware)
 if settings.mcp_auth_enabled:
     app.add_middleware(MCPAuthMiddleware)
 
-# --- FastApiMCP (используется только для fallback методов initialize/ping) ---
+# --- Minimal MCP subapp (fallback для initialize/ping) ---
 from fastapi import FastAPI as _FastAPI
 from app.mcp_server import SearchDocumentsInput, SearchCategoriesInput, GetCategoryHierarchyInput
 from app.mcp_server import _search_documents_internal, _search_categories_internal, _get_category_hierarchy_internal
 mcp_app = _FastAPI(title="MCP subapp")
-mcp = FastApiMCP(
-    mcp_app,
-    name="Document Search MCP",
-    description="Document semantic search service.",
-    auth_config=None,
-)
 
 
 # --- Определение функций MCP-инструментов (используются в кастомном прокси) ---
@@ -596,8 +591,39 @@ async def _forward_request_to_subapp(request: Request):
 
 
 # Регистрируем прокси-маршруты для MCP
-for p in ["/mcp", "/mcp/", "/mcp/rpc", "/mcp/rpc/"]:
-    app.add_api_route(p, _forward_request_to_subapp, methods=["GET", "POST", "DELETE", "OPTIONS", "HEAD"])
+_mcp_routes = {
+    "/mcp": [
+        ("get", "_forward_request_to_subapp_mcp_get"),
+        ("post", "_forward_request_to_subapp_mcp_post"),
+        ("delete", "_forward_request_to_subapp_mcp_delete"),
+        ("options", "_forward_request_to_subapp_mcp_options"),
+        ("head", "_forward_request_to_subapp_mcp_head"),
+    ],
+    "/mcp/": [
+        ("get", "_forward_request_to_subapp_mcp_trailing_get"),
+        ("post", "_forward_request_to_subapp_mcp_trailing_post"),
+        ("delete", "_forward_request_to_subapp_mcp_trailing_delete"),
+        ("options", "_forward_request_to_subapp_mcp_trailing_options"),
+        ("head", "_forward_request_to_subapp_mcp_trailing_head"),
+    ],
+    "/mcp/rpc": [
+        ("get", "_forward_request_to_subapp_mcp_rpc_get"),
+        ("post", "_forward_request_to_subapp_mcp_rpc_post"),
+        ("delete", "_forward_request_to_subapp_mcp_rpc_delete"),
+        ("options", "_forward_request_to_subapp_mcp_rpc_options"),
+        ("head", "_forward_request_to_subapp_mcp_rpc_head"),
+    ],
+    "/mcp/rpc/": [
+        ("get", "_forward_request_to_subapp_mcp_rpc_trailing_get"),
+        ("post", "_forward_request_to_subapp_mcp_rpc_trailing_post"),
+        ("delete", "_forward_request_to_subapp_mcp_rpc_trailing_delete"),
+        ("options", "_forward_request_to_subapp_mcp_rpc_trailing_options"),
+        ("head", "_forward_request_to_subapp_mcp_rpc_trailing_head"),
+    ],
+}
+for path, methods in _mcp_routes.items():
+    for method, op_id in methods:
+        app.add_api_route(path, _forward_request_to_subapp, methods=[method.upper()], operation_id=op_id)
 
 # Монтируем mcp_app для fallback (не используется напрямую, но нужно для initialize/ping)
 app.mount("/_internal_mcp", mcp_app)
@@ -618,6 +644,28 @@ async def lifespan(_app: FastAPI):
     # Startup
     settings.configure_logging()
     diag_logger.info("Starting up RAG service...")
+    
+    # Загружаем модель эмбеддингов при старте
+    # Сначала пробуем из кэша, если нет — скачиваем
+    try:
+        from app.core.embeddings import initialize_model
+        model = await asyncio.to_thread(initialize_model, online=False)
+        diag_logger.info(f"Embedding model loaded from cache: {type(model).__name__}")
+    except RuntimeError as e:
+        if "not found in cache" in str(e):
+            diag_logger.warning("Model not in cache. Downloading from Hugging Face...")
+            try:
+                from app.core.embeddings import initialize_model
+                model = await asyncio.to_thread(initialize_model, online=True)
+                diag_logger.info(f"Embedding model downloaded and initialized: {type(model).__name__}")
+            except Exception as download_err:
+                diag_logger.error(f"Failed to download model: {download_err}")
+                diag_logger.error("Set HF_HUB_OFFLINE=0 and restart to download the model.")
+                raise RuntimeError(f"Cannot initialize embedding model. Neither cache nor download available.") from download_err
+        else:
+            diag_logger.error(f"Failed to initialize embedding model: {e}")
+            raise
+    
     # Регистрация инструментов через FastApiMCP больше не нужна, т.к. используется кастомный прокси.
     # Оставляем mcp_app для инициализации, если потребуется.
     diag_logger.info("MCP tools are ready via custom proxy.")
