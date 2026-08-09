@@ -97,6 +97,14 @@ class Settings(BaseSettings):
     docling_do_ocr: bool = Field(default=True, validation_alias="DOCLING_DO_OCR")
     docling_image_description_model: str = Field(default="", validation_alias="DOCLING_IMAGE_DESCRIPTION_MODEL")
     docling_images_scale: float = Field(default=1.0, validation_alias="DOCLING_IMAGES_SCALE", gt=0, le=4.0)
+    docling_extract_images: bool = Field(default=True, validation_alias="DOCLING_EXTRACT_IMAGES")
+    # Рендеринг изображений из PDF заметно нагружает CPU и память, поэтому выключен по умолчанию
+    docling_extract_pdf_images: bool = Field(default=False, validation_alias="DOCLING_EXTRACT_PDF_IMAGES")
+
+    # Media storage (извлечённые из документов изображения)
+    media_dir: str = Field(default="uploads/media", validation_alias="MEDIA_DIR")
+    media_url_prefix: str = Field(default="/media", validation_alias="MEDIA_URL_PREFIX")
+    media_base_url: str = Field(default="", validation_alias="MEDIA_BASE_URL")
 
     model_config = SettingsConfigDict(extra="allow", env_file=".env", env_file_encoding="utf-8")
 

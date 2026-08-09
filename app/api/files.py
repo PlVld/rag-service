@@ -24,6 +24,7 @@ from app.api.health import get_client
 from qdrant_client.http import models as qdrant_models
 from qdrant_client.http.exceptions import UnexpectedResponse
 from app.repository.qdrant_repository import QdrantBatchWriter
+from app.text_cleaning.image_store import cleanup_other_versions
 
 router = APIRouter(prefix="/v1/files",
                    tags=["Files"],
@@ -127,12 +128,18 @@ def detect_mime_type(file_path: str) -> str:
     return mime_type
 
 
-async def extract_text_from_file(file_path: str) -> str:
+async def extract_text_from_file(
+    file_path: str,
+    source_id: Optional[str] = None,
+    doc_hash: Optional[str] = None,
+) -> str:
     """
     Асинхронно извлекает текст из файла в зависимости от его формата.
 
     Args:
         file_path (str): Путь к файлу для чтения.
+        source_id (Optional[str]): Идентификатор источника — часть пути к картинкам.
+        doc_hash (Optional[str]): Хеш содержимого документа — часть пути к картинкам.
 
     Returns:
         str: Содержимое файла в виде строки.
@@ -150,9 +157,16 @@ async def extract_text_from_file(file_path: str) -> str:
             try:
                 logger.info("Attempting Docling conversion")
                 from app.text_cleaning.docling_cache import get_docling_cleaner
+                from app.text_cleaning.image_store import prepare_media_dir, rewrite_image_links
+
+                media_dir = prepare_media_dir(source_id, doc_hash)
                 docling_cleaner = get_docling_cleaner()
-                text_content = await asyncio.to_thread(docling_cleaner.clean, file_path)
+                text_content = await asyncio.to_thread(
+                    docling_cleaner.clean, file_path, media_dir=media_dir
+                )
                 if text_content and text_content.strip():
+                    if media_dir is not None:
+                        text_content = rewrite_image_links(text_content, source_id, doc_hash)
                     logger.info(f"Docling conversion successful, length: {len(text_content)} characters")
                     return text_content
                 else:
@@ -201,7 +215,7 @@ async def convert_file_to_markdown_raw(
     """
     temp_path = None
     try:
-        temp_path, file_size, _ = await save_file_and_compute_hash(file)
+        temp_path, file_size, file_hash = await save_file_and_compute_hash(file)
         detected_mime = detect_mime_type(temp_path)
         validate_mime_type_and_extension(file.filename, detected_mime)
         file_ext = os.path.splitext(file.filename)[1].lower()
@@ -213,9 +227,24 @@ async def convert_file_to_markdown_raw(
             try:
                 logger.info("Attempting Docling conversion for markdown preview")
                 from app.text_cleaning.docling_cache import get_docling_cleaner
+                from app.text_cleaning.image_store import (
+                    PREVIEW_SOURCE_ID,
+                    prepare_media_dir,
+                    rewrite_image_links,
+                )
+
+                # Превью показывает ровно то, что попадёт в индекс, поэтому картинки
+                # сохраняем так же — но в отдельный служебный каталог
+                media_dir = prepare_media_dir(PREVIEW_SOURCE_ID, file_hash)
                 docling_cleaner = get_docling_cleaner()
-                markdown_text = await asyncio.to_thread(docling_cleaner.clean, temp_path)
+                markdown_text = await asyncio.to_thread(
+                    docling_cleaner.clean, temp_path, media_dir=media_dir
+                )
                 if markdown_text and markdown_text.strip():
+                    if media_dir is not None:
+                        markdown_text = rewrite_image_links(
+                            markdown_text, PREVIEW_SOURCE_ID, file_hash
+                        )
                     logger.info(f"Docling conversion successful, length: {len(markdown_text)}")
                 else:
                     logger.warning("Docling produced empty content, falling back to legacy converters")
@@ -684,7 +713,7 @@ async def process_single_file(
                 return result
 
         # Сценарий B и C
-        text_content = await extract_text_from_file(temp_path)
+        text_content = await extract_text_from_file(temp_path, effective_source_id, doc_hash)
         if not text_content:
             result.update({
                 "status": "file is null, skipped",
@@ -739,6 +768,7 @@ async def process_single_file(
                 )
                 create_elapsed = time.time() - start_create_time
                 logger.info(f"Document version {new_version} with {len(point_ids)} chunks created in {create_elapsed:.3f}s")
+                cleanup_other_versions(effective_source_id, doc_hash)
                 os.unlink(temp_path)
                 result.update({
                     "status": "created",

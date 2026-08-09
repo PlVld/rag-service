@@ -27,11 +27,13 @@ def _create_cleaner() -> "BaseCleaner":
         ocr_engine=settings.docling_ocr_engine,
         image_description_model=settings.docling_image_description_model or None,
         images_scale=settings.docling_images_scale,
+        extract_pdf_images=settings.docling_extract_pdf_images,
     )
     logger.info(
         "DoclingCleaner singleton created "
         f"(ocr={settings.docling_do_ocr}, engine={settings.docling_ocr_engine}, "
-        f"scale={settings.docling_images_scale})"
+        f"scale={settings.docling_images_scale}, "
+        f"pdf_images={settings.docling_extract_pdf_images})"
     )
     return cleaner
 

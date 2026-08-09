@@ -380,3 +380,167 @@ def test_upload_document_with_category_hierarchy(test_collection, rest_api_clien
             break
     
     assert found, "Document with category hierarchy should be found"
+
+
+# --- Изображения, извлечённые из документов ---
+
+IMAGE_FILENAME = "image_000000_ab12cd34.png"
+
+
+def test_rewrite_image_links_builds_public_url(monkeypatch):
+    """Относительная ссылка docling превращается в публичный URL."""
+    from app.text_cleaning import image_store
+
+    monkeypatch.setattr(settings, "media_url_prefix", "/media")
+    monkeypatch.setattr(settings, "media_base_url", "")
+
+    markdown = f"Текст\n\n![Image](images/{IMAGE_FILENAME})\n\nЕщё текст"
+    result = image_store.rewrite_image_links(markdown, "doc-src", "0123456789abcdef0123")
+
+    assert f"![Image](/media/doc-src/0123456789abcdef/images/{IMAGE_FILENAME})" in result
+
+
+def test_rewrite_image_links_with_base_url(monkeypatch):
+    """При заданном media_base_url ссылки становятся абсолютными."""
+    from app.text_cleaning import image_store
+
+    monkeypatch.setattr(settings, "media_url_prefix", "/media")
+    monkeypatch.setattr(settings, "media_base_url", "http://localhost:8000/")
+
+    result = image_store.rewrite_image_links(
+        f"![Image](images/{IMAGE_FILENAME})", "src", "abcdef0123456789xyz"
+    )
+
+    assert result == f"![Image](http://localhost:8000/media/src/abcdef0123456789/images/{IMAGE_FILENAME})"
+
+
+def test_public_url_uses_forward_slashes(monkeypatch):
+    """Разделитель в URL всегда '/', даже если путь пришёл в стиле Windows."""
+    from app.text_cleaning import image_store
+
+    monkeypatch.setattr(settings, "media_url_prefix", "/media")
+    monkeypatch.setattr(settings, "media_base_url", "")
+
+    url = image_store.public_url_for("src", "0123456789abcdef", f"images\\{IMAGE_FILENAME}")
+
+    assert "\\" not in url
+    assert url.endswith(f"/images/{IMAGE_FILENAME}")
+
+
+@pytest.mark.parametrize("content_type", ["markdown", "docx", "pdf"])
+def test_chunking_keeps_image_link_intact(content_type):
+    """Ссылка на картинку не режется по точке перед расширением файла."""
+    from app.chunking import LangChainChunker
+
+    link = f"![Image](/media/src/0123456789abcdef/images/{IMAGE_FILENAME})"
+    # Ссылка стоит внутри абзаца, а размер чанка чуть больше её длины — без защиты
+    # сплиттер разрывает её по точке перед .png
+    text = f"Схема подключения оборудования показана на рисунке {link} и описана в разделе три."
+
+    chunker = LangChainChunker(chunk_size=120, chunk_overlap=10, min_chunk_size=0)
+    chunks = chunker.chunk(text, {"content_type": content_type})
+
+    assert any(link in chunk["text"] for chunk in chunks), (
+        f"Ссылка разорвана при чанкинге: {[c['text'] for c in chunks]}"
+    )
+
+
+def test_normalize_for_embedding_drops_image_links():
+    """Ссылка на картинку не попадает в текст для вектора."""
+    from app.text_cleaning.normalizer import normalize_for_embedding
+
+    text = f"До картинки ![Схема сети](/media/src/0123456789abcdef/images/{IMAGE_FILENAME}) после картинки"
+    result = normalize_for_embedding(text, source_format="markdown")
+
+    assert "image_000000" not in result
+    assert "media" not in result
+    assert "схема сети" not in result
+    assert "до картинки" in result
+    assert "после картинки" in result
+
+
+def test_cleanup_other_versions_keeps_current(tmp_path, monkeypatch):
+    """Каталоги прочих версий удаляются, текущий остаётся."""
+    from app.text_cleaning import image_store
+
+    monkeypatch.setattr(settings, "media_dir", str(tmp_path))
+
+    keep_hash = "0123456789abcdef" + "0" * 48
+    stale_hash = "fedcba9876543210" + "0" * 48
+    keep_dir = image_store.resolve_media_dir("src", keep_hash)
+    stale_dir = image_store.resolve_media_dir("src", stale_hash)
+    (stale_dir / "images").mkdir()
+    (stale_dir / "images" / IMAGE_FILENAME).write_bytes(b"png")
+
+    image_store.cleanup_other_versions("src", keep_hash)
+
+    assert keep_dir.is_dir()
+    assert not stale_dir.exists()
+
+
+@pytest.mark.integration
+def test_docling_extracts_images_from_docx(tmp_path):
+    """DOCX с картинкой: PNG попадает на диск, ссылка — в Markdown."""
+    import io
+
+    docx = pytest.importorskip("docx")
+    PIL_Image = pytest.importorskip("PIL.Image")
+
+    image_bytes = io.BytesIO()
+    PIL_Image.new("RGB", (64, 64), color=(200, 30, 30)).save(image_bytes, format="PNG")
+    image_bytes.seek(0)
+
+    document = docx.Document()
+    document.add_paragraph("Схема подключения оборудования приведена ниже.")
+    document.add_picture(image_bytes)
+    document.add_paragraph("Подключение выполняется согласно схеме.")
+    docx_path = tmp_path / "with_image.docx"
+    document.save(str(docx_path))
+
+    from app.text_cleaning.docling_cleaner import DoclingCleaner
+
+    media_dir = tmp_path / "media"
+    media_dir.mkdir()
+    markdown = DoclingCleaner(do_ocr=False).clean(docx_path, media_dir=media_dir)
+
+    saved = list((media_dir / "images").glob("*.png"))
+    assert saved, "Docling должен был сохранить картинку на диск"
+    assert saved[0].name in markdown
+    assert not (media_dir / "document.md").exists(), "Временный document.md должен быть удалён"
+
+
+@pytest.mark.integration
+def test_docling_docx_image_link_rewritten_to_url(tmp_path, monkeypatch):
+    """Полный путь: картинка из DOCX превращается в публичный URL в raw_text."""
+    import io
+
+    docx = pytest.importorskip("docx")
+    PIL_Image = pytest.importorskip("PIL.Image")
+
+    monkeypatch.setattr(settings, "media_dir", str(tmp_path / "media"))
+    monkeypatch.setattr(settings, "media_url_prefix", "/media")
+    monkeypatch.setattr(settings, "media_base_url", "")
+    monkeypatch.setattr(settings, "docling_extract_images", True)
+
+    image_bytes = io.BytesIO()
+    PIL_Image.new("RGB", (48, 48), color=(20, 90, 200)).save(image_bytes, format="PNG")
+    image_bytes.seek(0)
+
+    document = docx.Document()
+    document.add_paragraph("Схема подключения приведена ниже.")
+    document.add_picture(image_bytes)
+    docx_path = tmp_path / "linked.docx"
+    document.save(str(docx_path))
+
+    from app.text_cleaning.docling_cleaner import DoclingCleaner
+    from app.text_cleaning.image_store import prepare_media_dir, rewrite_image_links
+
+    doc_hash = "0123456789abcdef" + "f" * 48
+    media_dir = prepare_media_dir("src-docx", doc_hash)
+    markdown = DoclingCleaner(do_ocr=False).clean(docx_path, media_dir=media_dir)
+    markdown = rewrite_image_links(markdown, "src-docx", doc_hash)
+
+    saved = list((media_dir / "images").glob("*.png"))
+    assert saved, "Картинка должна быть сохранена"
+    assert f"/media/src-docx/0123456789abcdef/images/{saved[0].name}" in markdown
+    assert "\\" not in markdown

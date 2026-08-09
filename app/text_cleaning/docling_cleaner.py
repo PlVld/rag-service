@@ -5,6 +5,7 @@ from typing import Optional, Union, Any
 from pathlib import Path
 
 from .base import BaseCleaner
+from .image_store import IMAGES_SUBDIR
 
 try:
     from docling.document_converter import DocumentConverter, PdfFormatOption
@@ -16,6 +17,7 @@ try:
         EasyOcrOptions,
         RapidOcrOptions,
     )
+    from docling_core.types.doc import ImageRefMode
 
     DOCLING_AVAILABLE = True
 except ImportError as e:
@@ -30,6 +32,7 @@ except ImportError as e:
     TesseractCliOcrOptions = None  # type: ignore
     EasyOcrOptions = None  # type: ignore
     RapidOcrOptions = None  # type: ignore
+    ImageRefMode = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -46,11 +49,13 @@ class DoclingCleaner(BaseCleaner):
         ocr_engine: str = "easyocr",
         image_description_model: Optional[str] = None,
         images_scale: float = 1.0,
+        extract_pdf_images: bool = False,
     ):
         self.do_ocr = do_ocr
         self.ocr_engine = ocr_engine
         self.image_description_model = image_description_model
         self.images_scale = images_scale
+        self.extract_pdf_images = extract_pdf_images
         self._converter: Any = None
 
     def _get_converter(self) -> Optional[DocumentConverter]:
@@ -64,6 +69,8 @@ class DoclingCleaner(BaseCleaner):
         pdf_pipeline_options = PdfPipelineOptions()
         pdf_pipeline_options.do_ocr = self.do_ocr
         pdf_pipeline_options.images_scale = self.images_scale
+        # Рендеринг страниц ради картинок дорог по CPU и памяти, поэтому под флагом
+        pdf_pipeline_options.generate_picture_images = self.extract_pdf_images
 
         # Настройка OCR
         if self.do_ocr:
@@ -97,12 +104,15 @@ class DoclingCleaner(BaseCleaner):
         logger.info("Docling DocumentConverter initialized")
         return self._converter
 
-    def clean(self, source: Union[str, bytes, Path], **kwargs) -> str:
+    def clean(self, source: Union[str, bytes, Path], media_dir: Optional[Path] = None, **kwargs) -> str:
         """
         Конвертирует документ в Markdown.
 
         Args:
             source: Путь к файлу (str/Path) или байтовое содержимое (bytes)
+            media_dir: Каталог для извлечённых изображений. Если задан, картинки
+                сохраняются в {media_dir}/images, а в Markdown появляются
+                относительные ссылки на них.
 
         Returns:
             Markdown-представление документа
@@ -135,7 +145,10 @@ class DoclingCleaner(BaseCleaner):
                 return ""
 
             # Извлечение Markdown
-            markdown_content = result.document.export_to_markdown()
+            if media_dir is not None:
+                markdown_content = self._export_with_images(result.document, media_dir)
+            else:
+                markdown_content = result.document.export_to_markdown()
 
             if not markdown_content:
                 logger.warning("Docling produced empty markdown")
@@ -151,6 +164,28 @@ class DoclingCleaner(BaseCleaner):
             # Освобождаем память после конвертации
             self._clear_converter()
             gc.collect()
+
+    @staticmethod
+    def _export_with_images(document: Any, media_dir: Path) -> str:
+        """
+        Сохраняет Markdown вместе с картинками и возвращает его текст.
+
+        export_to_markdown(image_mode=REFERENCED) файлы на диск не пишет: сериализатор
+        откатывается на плейсхолдер, если uri — это data:-URI. Картинки сохраняет только
+        save_as_markdown, поэтому пишем во временный document.md и читаем его обратно.
+        Относительный artifacts_dir даёт ссылки вида images/image_000000_<hash>.png.
+        """
+        md_path = media_dir / "document.md"
+        try:
+            document.save_as_markdown(
+                md_path,
+                artifacts_dir=Path(IMAGES_SUBDIR),
+                image_mode=ImageRefMode.REFERENCED,
+            )
+            return md_path.read_text(encoding="utf-8")
+        finally:
+            # Каталог раздаётся публично, полный текст документа там оставлять нельзя
+            md_path.unlink(missing_ok=True)
 
     def _clear_converter(self):
         """Освобождает память конвертера для предотвращения утечек памяти."""

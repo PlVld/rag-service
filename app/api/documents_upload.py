@@ -29,6 +29,7 @@ from app.repository.qdrant_repository import QdrantBatchWriter
 from qdrant_client.http import models as qdrant_models
 from qdrant_client.http.exceptions import UnexpectedResponse
 from app.core.embeddings import encode_text
+from app.text_cleaning.image_store import cleanup_other_versions
 
 router = APIRouter(prefix="/v1/documents",
                    tags=["Documents"],
@@ -362,6 +363,9 @@ async def process_documents(
 
         # Фиксируем, что документ был обновлён
         updated_source_ids.add(source_id)
+
+        # Очищаем картинки старых версий документа
+        cleanup_other_versions(source_id, doc_hash)
 
     elapsed = time.time() - start_time
     logger.info(f"Document processing completed in {elapsed:.3f}s: {len(updated_source_ids)} updated, {len(total_points)} points created")

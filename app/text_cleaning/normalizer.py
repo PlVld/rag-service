@@ -30,16 +30,20 @@ def normalize_for_embedding(text: str, source_format: str = 'text', category_pat
     if category_path:
         text = f"{category_path}. {text}"
 
-    # 1. Замена ссылок [текст](url) -> текст
+    # 1. Ссылки на картинки удаляем целиком: они живут только в raw_text,
+    # в векторе от URL-а картинки пользы нет
+    text = re.sub(r'!\[[^]]*]\([^)]*\)', ' ', text)
+
+    # 2. Замена ссылок [текст](url) -> текст
     text = re.sub(r'\[([^]]+)]\([^)]+\)', r'\1', text)
 
-    # 2. Удаление Markdown-символов (заголовки, жирный, курсив, код)
+    # 3. Удаление Markdown-символов (заголовки, жирный, курсив, код)
     text = re.sub(r'^#+\s+', '', text, flags=re.MULTILINE)  # # Заголовок
     text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)  # **жирный**
     text = re.sub(r'\*([^*]+)\*', r'\1', text)  # *курсив*
     text = re.sub(r'`([^`]+)`', r'\1', text)  # `код`
 
-    # 3. Преобразование таблиц из Markdown в линейный вид
+    # 4. Преобразование таблиц из Markdown в линейный вид
     lines = text.split('\n')
     cleaned_lines = []
     for line in lines:
@@ -54,17 +58,17 @@ def normalize_for_embedding(text: str, source_format: str = 'text', category_pat
         cleaned_lines.append(line)
     text = ' '.join(cleaned_lines)
 
-    # 4. Приведение к нижнему регистру
+    # 5. Приведение к нижнему регистру
     text = text.lower()
 
-    # 5. Нормализация пробелов и переносов строк
+    # 6. Нормализация пробелов и переносов строк
     text = re.sub(r'[ \t]+', ' ', text)  # множественные пробелы/табы -> один пробел
     text = re.sub(r'\n+', ' ', text)  # переносы строк -> пробел
 
-    # 6. Удаление нежелательных символов (оставляем буквы, цифры, базовую пунктуацию)
+    # 7. Удаление нежелательных символов (оставляем буквы, цифры, базовую пунктуацию)
     text = re.sub(r'[^\w\s.,!?;:()"\'\-]', ' ', text)
 
-    # 7. Финальная очистка пробелов
+    # 8. Финальная очистка пробелов
     text = re.sub(r'\s+', ' ', text).strip()
 
     return text

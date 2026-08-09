@@ -21,6 +21,8 @@ class LangChainChunker(BaseChunker):
         r'(?:[a-z][a-z0-9+.-]*://|www\.)\S+?(?=[\s.,!?;:\'"\])]|$)',
         re.IGNORECASE
     )
+    # Ссылка на картинку целиком: ![alt](url) — иначе имя файла режется по точке перед .png
+    IMAGE_PATTERN = re.compile(r'!\[[^\]]*]\([^)]*\)')
 
     def __init__(self, chunk_size: int = 512, chunk_overlap: int = 50, min_chunk_size: int = 100):
         self.chunk_size = chunk_size
@@ -58,6 +60,12 @@ class LangChainChunker(BaseChunker):
         def replace_dots(match):
             return match.group(0).replace('.', '．')
         return LangChainChunker.URL_PATTERN.sub(replace_dots, text)
+
+    @staticmethod
+    def _protect_images(text: str) -> str:
+        def replace_dots(match):
+            return match.group(0).replace('.', '．')
+        return LangChainChunker.IMAGE_PATTERN.sub(replace_dots, text)
 
     @staticmethod
     def _restore_urls(text: str) -> str:
@@ -100,6 +108,11 @@ class LangChainChunker(BaseChunker):
         # Защита URL от разбиения (для текста и markdown)
         if content_type in ('text', 'markdown'):
             text = self._protect_urls(text)
+
+        # Картинки защищаем для всех форматов кроме кода: у загруженных файлов
+        # content_type равен source_format (docx, pdf), а ссылки там тоже есть
+        if content_type != 'code':
+            text = self._protect_images(text)
 
         # Выбор стратегии разбиения
         if content_type == 'markdown':

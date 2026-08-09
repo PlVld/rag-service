@@ -3,7 +3,9 @@ import logging
 import time
 import uvicorn
 import json
+from pathlib import Path
 from fastapi import FastAPI, Request
+from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 from app.api.health import get_client
 
@@ -95,6 +97,14 @@ app.include_router(health.router)
 app.include_router(categories.router)
 app.include_router(files.router)
 app.include_router(admin.router)
+
+# Раздача изображений, извлечённых из документов.
+# Доступ без токена: рендерер Markdown или модель не подставят заголовок Authorization
+# при загрузке картинки. Листинга каталогов у StaticFiles нет, а имена файлов содержат
+# хеш содержимого и не угадываются.
+_media_root = Path(settings.media_dir)
+_media_root.mkdir(parents=True, exist_ok=True)
+app.mount(settings.media_url_prefix, StaticFiles(directory=_media_root), name="media")
 
 # --- Инициализация MCP ---
 import base64
@@ -249,9 +259,19 @@ mcp_app = _FastAPI(title="MCP subapp")
 # --- Определение функций MCP-инструментов (используются в кастомном прокси) ---
 async def search_documents_tool(input_data: SearchDocumentsInput) -> str:
     """Поиск соответствующих тексту запроса чанков.
-    
+
     По умолчанию результаты группируются по category_path (group=true).
     Чтобы получить отдельные чанки, установите group=false.
+
+    Изображения, извлечённые из исходных документов (PDF, DOCX, HTML).
+    Текст чанка — это Markdown, и в нём могут встречаться ссылки на картинки,
+    например:
+        ![Image](/media/<source_id>/<hash>/images/image_000000_ab12cd34.png)
+    Картинки раздаёт этот же RAG-сервис по HTTP, токен для их загрузки не нужен
+    (StaticMount настроен без аутентификации).
+    Чтобы вставить картинку в ответ пользователю, используйте абсолютный URL:
+    подставьте базовый адрес RAG-сервиса перед путём `/media/...`
+    (например, `http://localhost:8000/media/...`).
     """
     result = await _search_documents_internal(
         query_text=input_data.query_text,
