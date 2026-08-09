@@ -116,22 +116,32 @@ class TestSearchDocumentsInternal:
     ):
         """Тест успешного поиска."""
         mock_client = MagicMock()
-        mock_client.get_collections.return_value = type('obj', (object,), {
+        mock_client.get_collections = AsyncMock(return_value=type('obj', (object,), {
             'collections': [type('obj', (object,), {'name': 'test'})()]
-        })()
-        
+        })())
+
+        # Добавляем векторы к mock-точкам для корректной работы reranking
+        for point in mock_search_points:
+            if point.vector is None:
+                point.vector = [0.1] * 1024
+
         with patch("app.utils.basic_normalize", return_value="тест"), \
              patch("app.api.health.get_client", return_value=mock_client), \
              patch("app.mcp_server._perform_search", new_callable=AsyncMock) as mock_search, \
-             patch("app.mcp_server.build_qdrant_filter") as mock_filter:
+             patch("app.mcp_server.build_qdrant_filter") as mock_filter, \
+             patch("app.mcp_server.rerank_by_query_similarity", new_callable=AsyncMock) as mock_rerank, \
+             patch("app.mcp_server.search_categories", new_callable=AsyncMock) as mock_sc:
 
             mock_search.return_value = mock_search_points
             mock_filter.return_value = None
+            mock_rerank.return_value = mock_search_points
+            mock_sc.return_value = []  # Нет найденных категорий
 
             result = await _search_documents_internal(
                 query_text="тест",
                 collection_name="test",
-                limit=5
+                limit=5,
+                group=False
             )
 
             assert result["success"] is True
@@ -166,17 +176,24 @@ class TestSearchDocumentsInternal:
     ):
         """Тест поиска с фильтром."""
         mock_client = MagicMock()
-        mock_client.get_collections.return_value = type('obj', (object,), {
+        mock_client.get_collections = AsyncMock(return_value=type('obj', (object,), {
             'collections': [type('obj', (object,), {'name': 'test'})()]
-        })()
-        
+        })())
+
+        # Добавляем векторы к mock-точкам для корректной работы reranking
+        for point in mock_search_points:
+            if point.vector is None:
+                point.vector = [0.1] * 1024
+
         with patch("app.utils.basic_normalize", return_value="тест"), \
              patch("app.api.health.get_client", return_value=mock_client), \
              patch("app.mcp_server._perform_search", new_callable=AsyncMock) as mock_search, \
-             patch("app.mcp_server.build_qdrant_filter") as mock_filter:
+             patch("app.mcp_server.build_qdrant_filter") as mock_filter, \
+             patch("app.mcp_server.rerank_by_query_similarity", new_callable=AsyncMock) as mock_rerank:
 
             mock_search.return_value = mock_search_points
             mock_filter.return_value = MagicMock()
+            mock_rerank.return_value = mock_search_points
 
             # Используем filter_criteria вместо filter
             result = await _search_documents_internal(
@@ -318,22 +335,18 @@ class TestSearchCategoriesByCollections:
         
         # Подготовим мокированный клиент
         mock_client = MagicMock()
-        mock_client.get_collections.return_value = type('obj', (object,), {
+        mock_client.get_collections = AsyncMock(return_value=type('obj', (object,), {
             'collections': [
                 type('obj', (object,), {'name': 'documents'})(),
                 type('obj', (object,), {'name': 'categories'})(),
             ]
-        })()
-        mock_client.scroll.return_value = mock_scroll_result
-        
+        })())
+        mock_client.scroll = AsyncMock(return_value=mock_scroll_result)
+
         with patch("app.api.categories.search_categories", mock_search_categories), \
              patch("app.utils.basic_normalize", return_value="документация"), \
-             patch("app.api.health.get_client", return_value=mock_client) as mock_get_client, \
+             patch("app.api.health.get_client", return_value=mock_client), \
              patch("app.api.categories._get_categories_by_facet", new_callable=AsyncMock) as mock_fallback:
-            print(f"DEBUG: mock_get_client.return_value = {mock_get_client.return_value}")
-            print(f"DEBUG: mock_get_client.return_value.get_collections = {mock_get_client.return_value.get_collections}")
-            print(f"DEBUG: mock_get_client.return_value.get_collections() = {mock_get_client.return_value.get_collections()}")
-            print(f"DEBUG: mock_get_client.return_value.get_collections().collections = {mock_get_client.return_value.get_collections().collections}")
             mock_fallback.return_value = {
                 "Документация / API": 2,
                 "Документация / Настройка": 1

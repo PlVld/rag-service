@@ -8,7 +8,7 @@ from typing import Optional, Dict, Any, List, Tuple
 from qdrant_client.http import models as qdrant_models
 
 from app.openapi_md.loader import load_openapi_md
-from app.utils import basic_normalize, create_response
+from app.utils import basic_normalize, create_response, scroll_all_pages
 from app.models.common import DocumentsUploadRequest, DocumentSearchRequest
 
 logger = logging.getLogger(__name__)
@@ -42,7 +42,7 @@ def get_category_path_from_payload(payload: Dict[str, Any]) -> str:
     return cat_path or ""
 
 
-def get_all_chunks(client, collection_name: str, source_id: str, version: int) -> List[Dict]:
+async def get_all_chunks(client, collection_name: str, source_id: str, version: int) -> List[Dict]:
     """Получает все чанки документа по source_id и версии."""
     filter_ = qdrant_models.Filter(
         must=[
@@ -50,10 +50,11 @@ def get_all_chunks(client, collection_name: str, source_id: str, version: int) -
             qdrant_models.FieldCondition(key="version", match=qdrant_models.MatchValue(value=version)),
         ]
     )
-    points, _ = client.scroll(
+    points = await scroll_all_pages(
+        client=client,
         collection_name=collection_name,
         scroll_filter=filter_,
-        limit=1000,  # достаточно для большинства документов
+        limit=1000,
         with_payload=True,
     )
     return [p.payload for p in points]

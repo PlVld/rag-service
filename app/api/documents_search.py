@@ -43,7 +43,7 @@ async def _perform_search(client, collection_name: str, query_vector, base_filte
     """
     try:
         if not cat_ids:
-            response = client.query_points(
+            response = await client.query_points(
                 collection_name=collection_name,
                 query=query_vector,
                 filter=base_filter,
@@ -79,7 +79,7 @@ async def _perform_search(client, collection_name: str, query_vector, base_filte
                 limit=limit * 2
             )
         ]
-        response = client.query_points(
+        response = await client.query_points(
             collection_name=collection_name,
             prefetch=prefetch_list,
             query=qdrant_models.FusionQuery(fusion=qdrant_models.Fusion.RRF),
@@ -131,7 +131,7 @@ async def search_documents(
 
         # Если collection_name не указан, получаем список всех коллекций
         if not request.collection_name:
-            collections_response = client.get_collections()
+            collections_response = await client.get_collections()
             collection_names = [c.name for c in collections_response.collections
                                 if c.name != settings.category_collection]
         else:
@@ -261,7 +261,7 @@ async def _group_search_results(
         if source_id not in source_id_collections:
             for col_name in collection_names:
                 try:
-                    chunks = get_all_chunks(client, col_name, source_id, version)
+                    chunks = await get_all_chunks(client, col_name, source_id, version)
                     if chunks:
                         source_id_collections[source_id] = col_name
                         break
@@ -275,7 +275,7 @@ async def _group_search_results(
 
         # Получаем чанки из найденной коллекции
         try:
-            all_chunks = get_all_chunks(client, col_name, source_id, version)
+            all_chunks = await get_all_chunks(client, col_name, source_id, version)
         except Exception as e:
             logger.debug(f"Document {source_id} not found in collection {col_name}: {e}")
             continue

@@ -1,6 +1,7 @@
 import os
 import uuid
 import json
+import asyncio
 import aiofiles
 import logging
 import time
@@ -13,7 +14,7 @@ from fastapi.responses import PlainTextResponse
 from app.auth import verify_api_key
 from app.openapi_md.loader import load_openapi_md
 
-from app.utils import create_file_upload_response, create_batch_upload_response, create_response
+from app.utils import create_file_upload_response, create_batch_upload_response, create_response, scroll_all_pages
 
 from app.api.documents import process_documents
 from app.models.common import DocumentsUploadRequest, DocumentCreate
@@ -148,14 +149,9 @@ async def extract_text_from_file(file_path: str) -> str:
         if settings.use_docling:
             try:
                 logger.info("Attempting Docling conversion")
-                from app.text_cleaning.docling_cleaner import DoclingCleaner
-                docling_cleaner = DoclingCleaner(
-                    do_ocr=settings.docling_do_ocr,
-                    ocr_engine=settings.docling_ocr_engine,
-                    image_description_model=settings.docling_image_description_model or None,
-                    images_scale=settings.docling_images_scale,
-                )
-                text_content = docling_cleaner.clean(file_path)
+                from app.text_cleaning.docling_cache import get_docling_cleaner
+                docling_cleaner = get_docling_cleaner()
+                text_content = await asyncio.to_thread(docling_cleaner.clean, file_path)
                 if text_content and text_content.strip():
                     logger.info(f"Docling conversion successful, length: {len(text_content)} characters")
                     return text_content
@@ -216,14 +212,9 @@ async def convert_file_to_markdown_raw(
         if settings.use_docling:
             try:
                 logger.info("Attempting Docling conversion for markdown preview")
-                from app.text_cleaning.docling_cleaner import DoclingCleaner
-                docling_cleaner = DoclingCleaner(
-                    do_ocr=settings.docling_do_ocr,
-                    ocr_engine=settings.docling_ocr_engine,
-                    image_description_model=settings.docling_image_description_model or None,
-                    images_scale=settings.docling_images_scale,
-                )
-                markdown_text = docling_cleaner.clean(temp_path)
+                from app.text_cleaning.docling_cache import get_docling_cleaner
+                docling_cleaner = get_docling_cleaner()
+                markdown_text = await asyncio.to_thread(docling_cleaner.clean, temp_path)
                 if markdown_text and markdown_text.strip():
                     logger.info(f"Docling conversion successful, length: {len(markdown_text)}")
                 else:
@@ -410,7 +401,7 @@ async def check_existing_document(collection_name: str, source_id: str, doc_hash
     )
     
     try:
-        points, _ = client.scroll(
+        points, _ = await client.scroll(
             collection_name=collection_name,
             scroll_filter=filter_cond,
             limit=1,
@@ -447,12 +438,13 @@ async def get_all_points_for_source(collection_name: str, source_id: str) -> Lis
     )
     
     try:
-        points, _ = client.scroll(
+        points = await scroll_all_pages(
+            client=client,
             collection_name=collection_name,
             scroll_filter=filter_cond,
             limit=1000,
             with_payload=True,
-            with_vectors=True
+            with_vectors=True,
         )
         logger.info(f"Retrieved {len(points)} points for source_id={source_id}")
         return points

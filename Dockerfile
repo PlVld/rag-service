@@ -1,12 +1,4 @@
 # =============================================================================
-# Этап 0: Скачивание модели bge-m3
-# =============================================================================
-FROM python:3.11-slim AS model-downloader
-
-RUN pip install --no-cache-dir sentence-transformers transformers huggingface_hub
-RUN python -c "from sentence_transformers import SentenceTransformer; model = SentenceTransformer('BAAI/bge-m3')"
-
-# =============================================================================
 # Этап 1: Сборщик зависимостей
 # =============================================================================
 FROM python:3.11-slim AS builder
@@ -43,29 +35,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
-# Копирование модели bge-m3
-COPY --from=model-downloader /root/.cache/huggingface/hub /app/model_cache/hub
-
 WORKDIR /app
 
-# Создаём пустые директории для моделей
-RUN mkdir -p /app/model_cache /app/docling_cache /app/uploads
-
-# Копирование исходного кода
-COPY ./app /app/app
-
 # Переменные окружения для кэша моделей.
-# Модели теперь встроены в Docker-образ, HF_HUB_OFFLINE=1 предотвращает попытки подключения к интернету.
+# Модель mount'ится из ./model_cache через docker-compose (volume mount)
 ENV HF_HOME=/app/model_cache
 ENV TRANSFORMERS_CACHE=/app/model_cache
 ENV SENTENCE_TRANSFORMERS_HOME=/app/model_cache
 ENV HF_HUB_OFFLINE=1
 
-# Переменные для Docling моделей (встроены в образ)
-ENV DOCLING_MODELS_PATH=/app/docling_cache
+# Переменные для Docling моделей (также из volume mount)
+ENV DOCLING_MODELS_PATH=/app/model_cache
 
 # Переменная окружения для poppler (Linux)
 ENV POPPLER_PATH=/usr/bin
+
+# Копирование исходного кода
+COPY ./app /app/app
 
 # Порт сервиса (можно переопределить через docker-compose или .env)
 ENV SERVICE_PORT=8000
@@ -73,6 +59,19 @@ ENV SERVICE_HOST=0.0.0.0
 
 # Открытие порта
 EXPOSE 8000
+
+# ---------------------------------------------------------------------------
+# Непривилегированный пользователь
+# ---------------------------------------------------------------------------
+RUN groupadd -r appuser && useradd -r -g appuser -d /app -s /sbin/nologin appuser
+RUN chown -R appuser:appuser /app
+USER appuser
+
+# ---------------------------------------------------------------------------
+# Healthcheck
+# ---------------------------------------------------------------------------
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
 
 # Запуск приложения
 CMD ["sh", "-c", "uvicorn app.main:app --host $SERVICE_HOST --port $SERVICE_PORT"]

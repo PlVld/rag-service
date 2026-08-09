@@ -1,7 +1,12 @@
+import asyncio
 import uuid
 import hashlib
 from datetime import datetime, timezone
-from typing import List, Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Union
+from qdrant_client.http import models as qdrant_models
+
+import logging
+logger = logging.getLogger(__name__)
 
 def generate_uuid_from_parts(parts: List[Any], namespace: uuid.UUID = uuid.NAMESPACE_DNS) -> str:
     def flatten(item):
@@ -155,3 +160,59 @@ def create_batch_upload_response(
             "version": "1.0.0"
         }
     }
+
+
+async def scroll_all_pages(
+    client: Any,
+    collection_name: str,
+    scroll_filter: Optional[Any],
+    limit: int,
+    with_payload: Union[bool, List[str]] = True,
+    with_vectors: Union[bool, List[str]] = False,
+) -> List[qdrant_models.PointStruct]:
+    """
+    Асинхронно скроллирует все точки из Qdrant-коллекции, обрабатывая пагинацию.
+
+    Внутренний цикл вызываet ``client.scroll`` пока ``next_page_offset`` не станет ``None``,
+    тем самым гарантируя, что документы больше лимита не будут молча обрезаны.
+
+    Args:
+        client: Экземпляр асинхронного клиента QdrantClient.
+        collection_name: Название коллекции.
+        scroll_filter: Фильтр для выборки точек (Qdrant Filter).
+        limit: Количество точек на один запрос (по умолчанию 1000).
+        with_payload:True / список имён полей / False.
+        with_vectors: True / список имён векторов / False.
+
+    Returns:
+        Полный список точек, найденных по фильтру.
+    """
+    all_points: List[qdrant_models.PointStruct] = []
+    offset = None
+    total_fetched = 0
+
+    while True:
+        points, next_offset = await client.scroll(
+            collection_name=collection_name,
+            scroll_filter=scroll_filter,
+            limit=limit,
+            offset=offset,
+            with_payload=with_payload,
+            with_vectors=with_vectors,
+        )
+        all_points.extend(points)
+        total_fetched += len(points)
+        if next_offset is None:
+            break
+        offset = next_offset
+
+    if total_fetched > limit:
+        logger.debug(
+            "scroll_all_pages: %s — %d точек собрано за %d запросов (limit=%d)",
+            collection_name,
+            total_fetched,
+            total_fetched // limit + (1 if total_fetched % limit else 0),
+            limit,
+        )
+
+    return all_points

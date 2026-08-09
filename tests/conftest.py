@@ -116,7 +116,7 @@ def reset_qdrant_client():
 @pytest.fixture
 def mock_collections():
     """Мок для получения списка коллекций."""
-    with patch("qdrant_client.QdrantClient.get_collections") as mock:
+    with patch("qdrant_client.AsyncQdrantClient.get_collections", new_callable=AsyncMock) as mock:
         mock.return_value = type('obj', (object,), {
             'collections': [
                 type('obj', (object,), {'name': 'documents'})(),
@@ -129,7 +129,7 @@ def mock_collections():
 @pytest.fixture
 def mock_facet_result():
     """Мок для facet-запроса."""
-    with patch("qdrant_client.QdrantClient.facet") as mock:
+    with patch("qdrant_client.AsyncQdrantClient.facet", new_callable=AsyncMock) as mock:
         mock.return_value = type('obj', (object,), {
             'hits': [
                 type('obj', (object,), {'value': 'Документация / API', 'count': 10})(),
@@ -145,16 +145,16 @@ def mock_qdrant_client():
     mock_client = MagicMock()
     
     # Mock get_collections
-    mock_client.get_collections.return_value = type('obj', (object,), {
+    mock_client.get_collections = AsyncMock(return_value=type('obj', (object,), {
         'collections': [
             type('obj', (object,), {'name': 'documents'})(),
             type('obj', (object,), {'name': 'categories'})(),
             type('obj', (object,), {'name': 'test_rest_api_mock'})(),
         ]
-    })()
-    
+    })())
+
     # Mock query_points (для поиска)
-    def mock_query_points(collection_name, query, limit, with_payload=True, filter=None):
+    async def mock_query_points(collection_name, query, limit, with_payload=True, filter=None):
         points = [
             MagicMock(
                 id="doc-1-point-1",
@@ -227,7 +227,7 @@ def mock_qdrant_client():
     mock_client.query_points = mock_query_points
     
     # Mock scroll (для получения всех точек)
-    def mock_scroll(collection_name, limit=100, with_payload=True, scroll_filter=None):
+    async def mock_scroll(collection_name, limit=100, with_payload=True, scroll_filter=None):
         points = [
             MagicMock(
                 id="scroll-doc-1",
@@ -267,7 +267,7 @@ def mock_qdrant_client():
     mock_client.scroll = mock_scroll
     
     # Mock facet
-    def mock_facet(collection_name, key, limit=10, facet_filter=None):
+    async def mock_facet(collection_name, key, limit=10, facet_filter=None):
         return type('obj', (object,), {
             'hits': [
                 type('obj', (object,), {'value': 'Документация / API', 'count': 10})(),
@@ -278,7 +278,7 @@ def mock_qdrant_client():
     mock_client.facet = mock_facet
     
     # Mock retrieve
-    def mock_retrieve(collection_name, ids, with_payload=True):
+    async def mock_retrieve(collection_name, ids, with_payload=True):
         points = [
             MagicMock(
                 id=doc_id,
@@ -299,13 +299,13 @@ def mock_qdrant_client():
     mock_client.retrieve = mock_retrieve
     
     # Mock upsert
-    mock_client.upsert.return_value = None
-    
+    mock_client.upsert = AsyncMock(return_value=None)
+
     # Mock create_collection
-    mock_client.create_collection.return_value = None
-    
+    mock_client.create_collection = AsyncMock(return_value=None)
+
     # Mock delete_collection
-    mock_client.delete_collection.return_value = None
+    mock_client.delete_collection = AsyncMock(return_value=None)
     
     return mock_client
 
@@ -333,11 +333,17 @@ def mock_categories():
 @pytest.fixture
 def test_collection():
     """Создает и удаляет тестовую коллекцию для интеграционных тестов."""
-    from app.api.health import get_client
-    
+    from qdrant_client import QdrantClient
+    from app.core.config import settings as app_settings
+
     collection_name = f"test_{int(time.time())}_{uuid.uuid4().hex[:8]}"
-    
-    client = get_client()
+
+    # Синхронный клиент: фикстура синхронная, приложение использует AsyncQdrantClient
+    client = QdrantClient(
+        url=app_settings.qdrant_url,
+        api_key=app_settings.qdrant_api_key,
+        timeout=120,
+    )
     
     # Создаем тестовую коллекцию
     try:

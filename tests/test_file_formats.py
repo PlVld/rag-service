@@ -2,9 +2,18 @@
 import pytest
 import time
 import uuid
-from app.api.health import get_client
+from qdrant_client import QdrantClient
 from app.core.config import settings
 from qdrant_client.http import models as qdrant_models
+
+
+def get_client() -> QdrantClient:
+    """Синхронный клиент Qdrant для setup и проверок в синхронных тестах."""
+    return QdrantClient(
+        url=settings.qdrant_url,
+        api_key=settings.qdrant_api_key,
+        timeout=120,
+    )
 
 
 def get_auth_headers():

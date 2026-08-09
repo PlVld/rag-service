@@ -1,0 +1,36 @@
+# =============================================================================
+# Docker Compose для разработки
+# =============================================================================
+# Используется с: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# Особенности:
+# - Bind mount для исходного кода (из docker-compose.yml)
+# - Uvicorn --reload для автоматической перезагрузки при изменении кода
+# - Увеличен timeout для отладки
+# - Открыты все порты для инструментов разработки
+# =============================================================================
+
+services:
+  app:
+    volumes:
+      # Исходный код уже смонтирован в docker-compose.yml
+      # ./app:/app/app — автоматически подхватывается
+
+    # Переопределение CMD: включаем --reload для разработки
+    command: ["sh", "-c", "uvicorn app.main:app --host $SERVICE_HOST --port $SERVICE_PORT --reload --reload-dir /app/app"]
+
+    # Переопределение переменных окружения для разработки
+    environment:
+      - LOG_LEVEL=DEBUG
+      # HF_HUB_OFFLINE=0 (по умолчанию) — позволяет скачать модель при первом запуске
+      # После первого запуска модель будет в ./model_cache и кэш будет использоваться
+
+    # Отключаем GPU для локальной разработки (если нет CUDA)
+    deploy:
+      resources:
+        reservations:
+          devices: null  # Убираем требование GPU
+
+networks:
+  dds_network:
+    driver: bridge

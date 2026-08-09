@@ -204,7 +204,7 @@ async def _search_documents_internal(
     # Если collection_name не указан, получаем список всех коллекций
     if not collection_name:
         try:
-            collections_response = client.get_collections()
+            collections_response = await client.get_collections()
             collection_names = [
                 c.name for c in collections_response.collections
                 if c.name != settings.category_collection

@@ -30,6 +30,7 @@ services:
     env_file:
       - .env
     volumes:
+      - ./app:/app/app        # Bind mount для быстрой разработки
       - ./uploads:/app/uploads
       - ./model_cache:/app/model_cache
     depends_on:
@@ -44,6 +45,12 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:${SERVICE_PORT:-8000}/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
 
 networks:
   dds_network:

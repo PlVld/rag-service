@@ -32,12 +32,29 @@ class ConsumeRequestBodyMiddleware(BaseHTTPMiddleware):
 
 
 class RequestDiagnosticsMiddleware(BaseHTTPMiddleware):
+    # Чувствительные ключи заголовков/куки, которые нужно маскировать
+    _SENSITIVE_HEADERS = {
+        "authorization",
+        "cookie",
+        "set-cookie",
+        "x-api-key",
+        "x-api-key",
+        "proxy-authorization",
+        "authenticate-info",
+        "proxy-authenticate-info",
+    }
+
     async def dispatch(self, request: Request, call_next):
         client = request.client
         client_info = f"{client.host}:{client.port}" if client else "unknown"
         method = request.method
         url = str(request.url)
-        headers = dict(request.headers)
+
+        # Маскируем чувствительные заголовки и куки
+        headers = {
+            k: "<REDACTED>" if k.lower() in self._SENSITIVE_HEADERS else v
+            for k, v in request.headers.items()
+        }
 
         diag_logger.info(
             "Incoming request: client=%s method=%s url=%s headers=%s",
@@ -344,7 +361,7 @@ async def get_collections_info() -> str:
 
     try:
         client = get_client()
-        collections_result = client.get_collections()
+        collections_result = await client.get_collections()
         collections = collections_result.collections if hasattr(collections_result, 'collections') else []
 
         collection_info = []
@@ -354,7 +371,7 @@ async def get_collections_info() -> str:
             try:
                 # Используем facet для получения уникальных category_level0
                 # Поле должно быть ключевым (keyword) в Qdrant
-                facet_result = client.facet(
+                facet_result = await client.facet(
                     collection_name=collection.name,
                     key="category_level0",      # поле, где хранится корневая категория
                     limit=5                    # максимум уникальных значений
@@ -670,7 +687,10 @@ async def lifespan(_app: FastAPI):
     # Оставляем mcp_app для инициализации, если потребуется.
     diag_logger.info("MCP tools are ready via custom proxy.")
     yield
-    # Shutdown (если потребуется)
+    # Shutdown
+    from app.api.health import close_client
+    await close_client()
+    diag_logger.info("Qdrant client closed.")
 
 
 app.router.lifespan_context = lifespan

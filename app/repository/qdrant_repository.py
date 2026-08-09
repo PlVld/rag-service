@@ -37,64 +37,64 @@ class QdrantBatchWriter:
     async def _ensure_collection(collection_name: str):
         client = get_client()
         try:
-            client.get_collection(collection_name)
+            await client.get_collection(collection_name)
         except UnexpectedResponse as e:
             if "Not found: Collection" in str(e):
                 logger.info(f"Creating collection {collection_name}")
-                client.create_collection(
+                await client.create_collection(
                     collection_name=collection_name,
                     vectors_config=qdrant_models.VectorParams(
                         size=get_embedding_dimension(),
                         distance=qdrant_models.Distance.COSINE,
                     ),
                 )
-                
+
                 # Создаем индексы для часто используемых полей
                 try:
                     # Индекс для source_id - используется для поиска и версионности
-                    client.create_payload_index(
+                    await client.create_payload_index(
                         collection_name=collection_name,
                         field_name="source_id",
                         field_type=qdrant_models.PayloadSchemaType.KEYWORD
                     )
 
                     # Индекс для is_latest - используется для фильтрации актуальных версий
-                    client.create_payload_index(
+                    await client.create_payload_index(
                         collection_name=collection_name,
                         field_name="is_latest",
                         field_type=qdrant_models.PayloadSchemaType.BOOL
                     )
 
                     # Индекс для version - используется для версионности
-                    client.create_payload_index(
+                    await client.create_payload_index(
                         collection_name=collection_name,
                         field_name="version",
                         field_type=qdrant_models.PayloadSchemaType.INTEGER
                     )
 
                     # Индекс для category_id - используется для поиска по категориям
-                    client.create_payload_index(
+                    await client.create_payload_index(
                         collection_name=collection_name,
                         field_name="category_id",
                         field_type=qdrant_models.PayloadSchemaType.KEYWORD
                     )
 
                     # Индекс для category_path_ids - используется для RRF-поиска по категориям
-                    client.create_payload_index(
+                    await client.create_payload_index(
                         collection_name=collection_name,
                         field_name="category_path_ids",
                         field_type=qdrant_models.PayloadSchemaType.KEYWORD
                     )
 
                     # Индекс для parent_id - используется для иерархии категорий
-                    client.create_payload_index(
+                    await client.create_payload_index(
                         collection_name=collection_name,
                         field_name="parent_id",
                         field_type=qdrant_models.PayloadSchemaType.KEYWORD
                     )
 
                     # Индекс для category_path - используется для фильтрации по пути
-                    client.create_payload_index(
+                    await client.create_payload_index(
                         collection_name=collection_name,
                         field_name="category_path",
                         field_type=qdrant_models.PayloadSchemaType.TEXT
@@ -102,7 +102,7 @@ class QdrantBatchWriter:
 
                     # Индексы для уровней категорий category_level0..9 - фильтрация по имени категории
                     for level in range(10):
-                        client.create_payload_index(
+                        await client.create_payload_index(
                             collection_name=collection_name,
                             field_name=f"category_level{level}",
                             field_type=qdrant_models.PayloadSchemaType.KEYWORD
@@ -110,7 +110,7 @@ class QdrantBatchWriter:
 
                     # Индексы для ID уровней категорий category_id_level0..9 - фильтрация по ID категории
                     for level in range(10):
-                        client.create_payload_index(
+                        await client.create_payload_index(
                             collection_name=collection_name,
                             field_name=f"category_id_level{level}",
                             field_type=qdrant_models.PayloadSchemaType.KEYWORD
@@ -199,7 +199,7 @@ class QdrantBatchWriter:
                                     upsert=qdrant_models.PointsList(points=chunk)
                                 )
                             ]
-                            client.batch_update_points(
+                            await client.batch_update_points(
                                 collection_name=collection_name,
                                 update_operations=chunk_ops,
                                 wait=True
@@ -212,7 +212,7 @@ class QdrantBatchWriter:
 
                     # Отправляем остальные операции (mark_not_latest и т.д.)
                     if other_ops:
-                        client.batch_update_points(
+                        await client.batch_update_points(
                             collection_name=collection_name,
                             update_operations=other_ops,
                             wait=True

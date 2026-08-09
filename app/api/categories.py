@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 from app.api.health import get_client
 from app.core.config import settings
-from app.utils import basic_normalize, generate_uuid_from_parts
+from app.utils import basic_normalize, generate_uuid_from_parts, scroll_all_pages
 from app.core.embeddings import encode_text
 from qdrant_client.http import models as qdrant_models
 from qdrant_client.http.exceptions import UnexpectedResponse
@@ -71,7 +71,7 @@ async def update_category_hierarchy(path: List[str]) -> Tuple[List[str], Dict[st
 
     existing_dict = {}
     try:
-        existing_points = client.retrieve(
+        existing_points = await client.retrieve(
             collection_name=settings.category_collection,
             ids=category_ids,
             with_payload=True
@@ -155,7 +155,7 @@ async def search_categories(query_text: str, limit: int = 10) -> List[CategoryRe
     query_vector = await encode_text(normalized_query, task_type="query")  # type: ignore
     
     try:
-        response = client.query_points(
+        response = await client.query_points(
             collection_name=settings.category_collection,
             query=query_vector,
             limit=limit,
@@ -325,7 +325,7 @@ async def search_categories_by_collections(query_text: str, limit: int = 10) -> 
     
     # Получаем список всех коллекций
     try:
-        collections_response = client.get_collections()
+        collections_response = await client.get_collections()
         collection_names = [
             c.name for c in collections_response.collections
             if c.name != settings.category_collection
@@ -490,7 +490,8 @@ async def _get_categories_by_facet(
         should=should_conditions
     )
     
-    points, _ = client.scroll(
+    points = await scroll_all_pages(
+        client=client,
         collection_name=collection_name,
         scroll_filter=query_filter,
         limit=10000,
@@ -574,7 +575,7 @@ async def get_all_categories(
                 ]
             )
         
-        points, _ = client.scroll(
+        points, _ = await client.scroll(
             collection_name=settings.category_collection,
             scroll_filter=scroll_filter,
             limit=limit,

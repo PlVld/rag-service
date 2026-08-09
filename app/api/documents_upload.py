@@ -126,7 +126,7 @@ async def process_documents(
         # Проверяем существование актуальной версии документа
         client = get_client()
         try:
-            points, _ = client.scroll(
+            points, _ = await client.scroll(
                 collection_name=request.collection_name,
                 scroll_filter=qdrant_models.Filter(
                     must=[

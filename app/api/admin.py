@@ -63,7 +63,7 @@ async def set_hnsw(
     client = get_client()
     try:
         effective_m = m if enabled else 0
-        client.update_collection(
+        await client.update_collection(
             collection_name=collection_name,
             hnsw_config=qdrant_models.HnswConfigDiff(m=effective_m),
         )
@@ -81,7 +81,7 @@ async def set_hnsw(
 async def create_payload_index(request: PayloadIndexRequest):
     client = get_client()
     try:
-        client.create_payload_index(
+        await client.create_payload_index(
             collection_name=request.collection_name,
             field_name=request.field_name,
             field_type=request.field_type
@@ -97,14 +97,14 @@ async def create_payload_index(request: PayloadIndexRequest):
 async def get_collections_with_categories():
     client = get_client()
     try:
-        collections_response = client.get_collections()
+        collections_response = await client.get_collections()
         collection_names = [c.name for c in collections_response.collections
                             if c.name != settings.category_collection]
 
         result = []
         for collection_name in collection_names:
             try:
-                facet_result = client.facet(
+                facet_result = await client.facet(
                     collection_name=collection_name,
                     key="category_level0",
                     limit=10000,
@@ -163,7 +163,7 @@ async def _get_category_paths_by_ids(client, category_ids: List[str]) -> Dict[st
     if not category_ids:
         return {}
     try:
-        points = client.retrieve(
+        points = await client.retrieve(
             collection_name=settings.category_collection,
             ids=category_ids,
             with_payload=["category_path"]
@@ -190,7 +190,7 @@ async def _get_category_hierarchy_data(
 
     try:
         # Получаем список всех коллекций
-        collections_response = client.get_collections()
+        collections_response = await client.get_collections()
         collection_names = [c.name for c in collections_response.collections
                             if c.name != settings.category_collection]
 
@@ -257,7 +257,7 @@ async def _get_category_hierarchy_data(
 
                 # Выполняем facet-запрос для текущего уровня
                 try:
-                    facet_result = client.facet(
+                    facet_result = await client.facet(
                         collection_name=coll_name,
                         key=field_name,
                         limit=10000,
