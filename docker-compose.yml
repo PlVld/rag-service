@@ -32,7 +32,6 @@ services:
     volumes:
       - ./app:/app/app        # Bind mount для быстрой разработки
       - ./uploads:/app/uploads
-      - ./model_cache:/app/model_cache
     depends_on:
       - qdrant
     networks:

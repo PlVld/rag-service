@@ -1,3 +1,10 @@
+# =============================================================================n# Этап 0: Загрузка модели bge-m3
+# =============================================================================
+FROM python:3.11-slim AS model-downloader
+
+RUN pip install --no-cache-dir sentence-transformers transformers huggingface_hub
+RUN python -c "from sentence_transformers import SentenceTransformer; model = SentenceTransformer('BAAI/bge-m3', local_files_only=False)"
+
 # =============================================================================
 # Этап 1: Сборщик зависимостей
 # =============================================================================
@@ -34,6 +41,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Копирование установленных пакетов из builder
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
+
+# Копирование модели bge-m3 из model-downloader
+RUN mkdir -p /app/model_cache
+COPY --from=model-downloader /root/.cache/huggingface /app/model_cache/huggingface
 
 WORKDIR /app
 

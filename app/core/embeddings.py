@@ -10,9 +10,10 @@ import torch
 
 logger = logging.getLogger(__name__)
 
-# Папка кэша в корне проекта
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-CACHE_DIR = os.path.join(BASE_DIR, "model_cache")
+# Папка кэша - используем переменные окружения с fallback на локальную директорию
+CACHE_DIR = os.environ.get("SENTENCE_TRANSFORMERS_HOME", 
+                   os.environ.get("HF_HOME", 
+                   os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "model_cache")))
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 # Полностью отключаем все сетевые функции Hugging Face
