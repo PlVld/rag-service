@@ -44,7 +44,7 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 
 # Копирование модели bge-m3 из model-downloader
 RUN mkdir -p /app/model_cache
-COPY --from=model-downloader /root/.cache/huggingface /app/model_cache/huggingface
+COPY --from=model-downloader /root/.cache/huggingface/hub /app/model_cache/hub
 
 WORKDIR /app
 
