@@ -102,28 +102,6 @@
 - Docker Compose v2
 - GPU (опционально, для ускорения работы с эмбеддингами)
 
-## ⚡ Быстрый старт (2 минуты)
-
-### Запуск одним командой
-
-```bash
-# 1. Клонируйте репозиторий
-git clone https://github.com/PlVld/rag-service.git
-cd rag-service
-
-# 2. Настройте переменные окружения
-cp .env.example .env
-# Отредактируйте .env: укажите свой RAG_SERVICE_API_KEY
-
-# 3. Запустите
-docker-compose up -d
-
-# 4. Готово! Откройте:
-curl http://localhost:8000/health
-# http://localhost:8000/docs (Swagger UI)
-```
-
-[Подробная инструкция →](#установка-и-настройка)
 
 ---
 
@@ -132,7 +110,7 @@ curl http://localhost:8000/health
 ### 1. Клонирование репозитория
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/PlVld/rag-service.git
 cd rag
 ```
 
