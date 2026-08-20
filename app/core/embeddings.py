@@ -145,6 +145,7 @@ def _load_model(offline: bool = True) -> SentenceTransformer:
             "trust_remote_code": True,
             "local_files_only": offline,  # Важно для офлайн-режима
             "revision": None,
+            "cache_dir": CACHE_DIR,
         }
 
         # Принудительно отключаем safetensors проверку, если есть проблемы
@@ -154,7 +155,6 @@ def _load_model(offline: bool = True) -> SentenceTransformer:
         model = SentenceTransformer(
             settings.embedding_model,
             device=device,
-            cache_folder=CACHE_DIR,
             model_kwargs=model_kwargs,
         )
         load_time = time.time() - load_start

@@ -1,10 +1,13 @@
 import gc
 import logging
+import shutil
+import sys
 from io import BytesIO
 from typing import Optional, Union, Any
 from pathlib import Path
 
 from .base import BaseCleaner
+from .bundled_tools import bundled_tessdata_dir, bundled_tesseract_cmd
 from .image_store import IMAGES_SUBDIR
 
 try:
@@ -18,6 +21,7 @@ try:
         RapidOcrOptions,
     )
     from docling_core.types.doc import ImageRefMode
+    from docling.datamodel.settings import settings as docling_settings
 
     DOCLING_AVAILABLE = True
 except ImportError as e:
@@ -33,8 +37,45 @@ except ImportError as e:
     EasyOcrOptions = None  # type: ignore
     RapidOcrOptions = None  # type: ignore
     ImageRefMode = None  # type: ignore
+    docling_settings = None  # type: ignore
 
 logger = logging.getLogger(__name__)
+
+# Модели, скачанные через `docling-tools models download -o ./models`. Путь считается
+# от корня проекта, поэтому переносится вместе с ним на другую машину.
+LOCAL_MODELS_DIR = Path(__file__).resolve().parents[2] / "models"
+
+
+def _local_artifacts_path() -> Optional[Path]:
+    """
+    Возвращает каталог с локальными моделями, если он есть.
+
+    Если artifacts_path задан, docling больше не обращается в сеть и падает с
+    FileNotFoundError на отсутствующей модели, поэтому при пустом каталоге отдаём None
+    и оставляем штатную загрузку с HuggingFace.
+    """
+    if not LOCAL_MODELS_DIR.is_dir():
+        return None
+    if not any(LOCAL_MODELS_DIR.iterdir()):
+        return None
+    return LOCAL_MODELS_DIR
+
+
+def _disable_torch_compile_without_c_compiler() -> None:
+    """
+    Docling по умолчанию оборачивает layout-модель в torch.compile, а backend inductor
+    на Windows требует MSVC cl.exe. Без него конвертация падает целиком, поэтому
+    заранее переводим модели в eager-режим.
+    """
+    if docling_settings is None:
+        return
+    if not docling_settings.inference.compile_torch_models:
+        return
+
+    compiler = "cl" if sys.platform == "win32" else "g++"
+    if shutil.which(compiler) is None:
+        docling_settings.inference.compile_torch_models = False
+        logger.info(f"C++ compiler '{compiler}' not found, running Docling models in eager mode")
 
 
 class DoclingCleaner(BaseCleaner):
@@ -65,6 +106,8 @@ class DoclingCleaner(BaseCleaner):
         if not DOCLING_AVAILABLE:
             raise ImportError("Docling is not installed. Run: pip install docling")
 
+        _disable_torch_compile_without_c_compiler()
+
         # Настройка PDF pipeline
         pdf_pipeline_options = PdfPipelineOptions()
         pdf_pipeline_options.do_ocr = self.do_ocr
@@ -72,11 +115,22 @@ class DoclingCleaner(BaseCleaner):
         # Рендеринг страниц ради картинок дорог по CPU и памяти, поэтому под флагом
         pdf_pipeline_options.generate_picture_images = self.extract_pdf_images
 
+        artifacts_path = _local_artifacts_path()
+        if artifacts_path is not None:
+            pdf_pipeline_options.artifacts_path = artifacts_path
+            logger.info(f"Using local Docling models from: {artifacts_path}")
+
         # Настройка OCR
         if self.do_ocr:
             if self.ocr_engine == "tesseract":
                 # TesseractCliOcrOptions вызывает tesseract как CLI (не требует tesserocr)
-                ocr_options = TesseractCliOcrOptions(lang=["rus", "eng"])
+                tesseract_kwargs: dict = {}
+                bundled_cmd = bundled_tesseract_cmd()
+                if bundled_cmd is not None:
+                    tesseract_kwargs["tesseract_cmd"] = bundled_cmd
+                    tesseract_kwargs["path"] = bundled_tessdata_dir()
+                    logger.info(f"Using bundled Tesseract: {bundled_cmd}")
+                ocr_options = TesseractCliOcrOptions(lang=["rus", "eng"], **tesseract_kwargs)
                 pdf_pipeline_options.ocr_options = ocr_options
                 logger.info("Using Tesseract CLI OCR engine (rus, eng)")
             elif self.ocr_engine == "rapidocr":

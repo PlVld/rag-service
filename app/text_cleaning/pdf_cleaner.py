@@ -6,6 +6,7 @@ from io import BytesIO
 from pypdf import PdfReader
 import pdfplumber  # новая зависимость
 from .base import BaseCleaner
+from .bundled_tools import POPPLER_BIN_DIR, bundled_tesseract_cmd
 
 try:
     from PIL import Image
@@ -38,24 +39,30 @@ class PDFCleaner(BaseCleaner):
 
         if OCR_AVAILABLE and ocr_enabled:
             try:
-                # Кроссплатформенное определение пути к poppler
+                # POPPLER_PATH имеет приоритет на всех системах; иначе на Windows берём
+                # копию из папки проекта, на Linux — системный пакет poppler-utils.
                 self.poppler_path = None
                 import platform
-                if platform.system() == "Windows":
-                    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-                    poppler_path = os.path.join(base_dir, "poppler", "Library", "bin")
+                if os.environ.get("POPPLER_PATH"):
+                    poppler_path = os.environ["POPPLER_PATH"]
+                elif platform.system() == "Windows":
+                    poppler_path = str(POPPLER_BIN_DIR)
                 else:
-                    # Linux: использует системный poppler или переменную окружения
-                    poppler_path = os.environ.get("POPPLER_PATH", "/usr/bin")
+                    poppler_path = "/usr/bin"
 
                 poppler_path = os.path.normpath(poppler_path)
                 if os.path.exists(poppler_path):
                     self.poppler_path = poppler_path
                     logger.info(f"Poppler path set to: {self.poppler_path}")
                 else:
-                    logger.error(f"Poppler path does not exist: {poppler_path}")
+                    # Не ошибка: OCR-ветка нужна только как страховка на случай отказа Docling
+                    logger.warning(f"Poppler not found at {poppler_path}, OCR fallback disabled")
                     self.ocr_enabled = False
                 if pytesseract:
+                    bundled_cmd = bundled_tesseract_cmd()
+                    if bundled_cmd is not None:
+                        pytesseract.pytesseract.tesseract_cmd = bundled_cmd
+                        logger.info(f"Using bundled Tesseract: {bundled_cmd}")
                     version = pytesseract.get_tesseract_version()
                     logger.info(f"Tesseract version: {version}")
             except Exception as init_e:

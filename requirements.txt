@@ -35,7 +35,7 @@ numpy>=1.24.0               # для операций с векторами (rer
 pdfplumber>=0.11.0           # для извлечения текста и таблиц из PDF
 python-magic>=0.4.27         # для определения MIME-type по сигнатурам
 python-magic-bin>=0.4.14; sys_platform == "win32"  # libmagic для Windows (не нужен в Linux/Docker)
-docling>=2.0.0               # для конвертации документов в Markdown с распознаванием изображений
+docling==2.118.0             # для конвертации документов в Markdown с распознаванием изображений
 starlette>=0.41.0            # для middlewares и lifespan events
 
 # Для CPU-only развертывания (без CUDA)

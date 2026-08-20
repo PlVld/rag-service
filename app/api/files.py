@@ -178,12 +178,12 @@ async def extract_text_from_file(
         if file_ext == '.pdf':
             # Для PDF файлов используем специальный обработчик
             async with aiofiles.open(file_path, "rb") as f:
-                content = await f.read()
-                logger.info(f"Read PDF file, size: {len(content)} bytes")
+                pdf_bytes = await f.read()
+                logger.info(f"Read PDF file, size: {len(pdf_bytes)} bytes")
                 # Создаем экземпляр PDFCleaner и извлекаем текст
                 from app.text_cleaning.pdf_cleaner import PDFCleaner
                 cleaner = PDFCleaner()
-                text_content = cleaner.clean(content.decode('utf-8', errors='replace'))
+                text_content = cleaner.clean(pdf_bytes)
                 logger.info(f"Successfully extracted text from PDF, length: {len(text_content)} characters")
                 return text_content
         elif file_ext in ['.docx', '.doc']:
@@ -259,9 +259,9 @@ async def convert_file_to_markdown_raw(
             if file_ext == ".pdf":
                 source_format = "pdf"
                 async with aiofiles.open(temp_path, "rb") as f:
-                    content = await f.read()
+                    pdf_bytes = await f.read()
                 from app.text_cleaning.pdf_cleaner import PDFCleaner
-                markdown_text = PDFCleaner().clean(content.decode('utf-8', errors='replace'))
+                markdown_text = PDFCleaner().clean(pdf_bytes)
             elif file_ext in [".docx", ".doc"]:
                 source_format = "docx"
                 from app.text_cleaning.doc_cleaner import DOCXCleaner

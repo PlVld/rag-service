@@ -10,6 +10,19 @@
 - [Мониторинг и логирование](#мониторинг-и-логирование)
 - [Backup и восстановление](#backup-и-восстановление)
 - [Troubleshooting](#troubleshooting)
+- [Оффлайн-развёртывание](#оффлайн-развёртывание)
+  - [Когда использовать оффлайн-режим](#когда-использовать-оффлайн-режим)
+  - [Что переносится на сервер](#что-переносится-на-сервер)
+  - [Предварительные требования](#предварительные-требования-1)
+  - [1. Сборка образа на машине с интернетом](#1-сборка-образа-на-машине-с-интернетом)
+  - [2. Экспорт образов в tar-архив](#2-экспорт-образов-в-tar-архив)
+  - [3. Перенос на целевой сервер](#3-перенос-на-целевой-сервер)
+  - [4. Импорт образов на целевом сервере](#4-импорт-образов-на-целевом-сервере)
+  - [5. Настройка и запуск](#5-настройка-и-запуск)
+  - [6. Проверка работоспособности](#6-проверка-работоспособности)
+  - [7. Остановка и обновление](#7-остановка-и-обновление)
+  - [Замена модели эмбеддингов](#замена-модели-эмбеддингов)
+  - [Решение проблем при оффлайн-развёртывании](#решение-проблем-при-оффлайн-развёртывании)
 
 ---
 
@@ -659,6 +672,290 @@ docker network inspect rag_dlds
 - [ ] Проведено нагрузочное тестирование
 - [ ] Документация обновлена
 - [ ] Доступы переданы команде поддержки
+
+---
+
+## Оффлайн-развёртывание
+
+Этот раздел описывает создание оффлайн-дистрибутива и развёртывание сервиса на машинах
+без доступа к интернету (air-gapped environments).
+
+### Когда использовать оффлайн-режим
+
+- Серверы без доступа к интернету
+- Изолированные корпоративные сети с требованиями безопасности
+- Среды, где запрещено скачивание образов и моделей извне
+
+### Что переносится на сервер
+
+Код приложения, модель эмбеддингов `BAAI/bge-m3` и модели Docling (layout, TableFormer)
+запечены внутрь образа, поэтому клонировать репозиторий на сервере не нужно. Достаточно
+трёх файлов:
+
+| Файл | Назначение |
+|------|-----------|
+| `images.tar.gz` | образы `dds-app` и `qdrant/qdrant` |
+| `docker-compose.offline.yml` | запуск без сборки и без bind-mount'ов кода |
+| `.env` | обязателен: указан в `env_file`, без него Compose не стартует |
+
+`docker-compose.offline.yml` намеренно сделан самодостаточным, а не override-файлом: при
+слиянии нескольких `-f` Compose **складывает** списки `volumes`, поэтому убрать наслоением
+bind-mount'ы `./app` и `./model_cache` из основного `docker-compose.yml` невозможно — они
+перекрыли бы запечённые в образ код и модели.
+
+### Предварительные требования
+
+- Машина с доступом к интернету и Docker с BuildKit (используется `--mount=type=cache`)
+- Совпадающая архитектура сборочной и целевой машины (обычно `linux/amd64`)
+- Целевая машина: Docker Engine 20.10+ и Docker Compose v2+
+- Свободное место на сервере: примерно двойной размер образа (архив + распакованные слои)
+
+---
+
+### 1. Сборка образа на машине с интернетом
+
+На этом шаге скачиваются `BAAI/bge-m3` (стадия `model-downloader`) и модели Docling
+(стадия `docling-models`). В финальном образе выставлен `HF_HUB_OFFLINE=1`, поэтому
+дозагрузить что-либо в рантайме уже нельзя — всё должно попасть в образ при сборке.
+
+#### Вариант A: CPU-only (рекомендуется)
+
+```bash
+cd /path/to/rag
+docker build -f Dockerfile.cpu -t dds-app:latest .
+```
+
+#### Вариант B: основной `Dockerfile`
+
+```bash
+docker build -t dds-app:latest .
+```
+
+Разница только в зависимостях: `requirements.txt` тянет `qdrant-client[fastembed-gpu]`
+(onnxruntime с CUDA), а `requirements-cpu.txt` — обычный `qdrant-client`. **PyTorch в обоих
+файлах зафиксирован как `torch==2.6.0+cpu`**, то есть модель эмбеддингов считается на CPU в
+любом случае, и NVIDIA Container Toolkit на сервере не нужен. Для настоящего GPU-инференса
+понадобится отдельная сборка с CUDA-версией torch — в проекте её сейчас нет.
+
+> Тег `dds-app:latest` прописан в `docker-compose.offline.yml`. Если собрали под другим
+> именем, переименуйте образ перед экспортом:
+> ```bash
+> docker tag dds-app-cpu:latest dds-app:latest
+> ```
+
+### 2. Экспорт образов в tar-архив
+
+Оба образа удобно сохранить в один архив:
+
+```bash
+mkdir -p distrib/docker-images
+
+docker pull qdrant/qdrant:latest
+docker save -o distrib/docker-images/images.tar dds-app:latest qdrant/qdrant:latest
+gzip distrib/docker-images/images.tar
+```
+
+#### Размеры
+
+Измеряйте, а не оценивайте — размер зависит от варианта сборки:
+
+```bash
+docker images dds-app:latest qdrant/qdrant:latest
+ls -lh distrib/docker-images/
+```
+
+Основной вклад дают модели: кэш `bge-m3` ~4.3 ГБ (Hugging Face скачивает и
+`pytorch_model.bin`, и `model.safetensors`), модели Docling ~0.7 ГБ, PyTorch CPU с
+зависимостями ~2 ГБ. Сжатие gzip обычно уменьшает архив на 30–50 %.
+
+> Не перенаправляйте `docker save` в stdout из PowerShell — бинарный поток портится.
+> Используйте `-o`, а `gzip` запускайте отдельной командой.
+
+### Замена модели эмбеддингов
+
+Имя `BAAI/bge-m3` захардкожено в стадии `model-downloader` обоих Dockerfile'ов, поэтому
+одной переменной в `.env` его не сменить. Нужны два согласованных изменения:
+
+1. В `Dockerfile` (или `Dockerfile.cpu`) — строка `SentenceTransformer('BAAI/bge-m3', ...)`
+2. В `.env` на сервере — `EMBEDDING_MODEL=<та же модель>`
+
+Если значения разойдутся, приложение попытается скачать отсутствующую модель и упадёт:
+в образе стоит `HF_HUB_OFFLINE=1`.
+
+Отдельно учтите размерность вектора: у другой модели она почти наверняка другая, а коллекция
+в Qdrant создаётся под конкретную размерность. После смены модели коллекции нужно пересоздать
+и переиндексировать документы. Для русскоязычных документов также проверяйте, что новая
+модель многоязычная — англоязычные модели заметно теряют качество.
+
+### 3. Перенос на целевой сервер
+
+Скопируйте архив и два текстовых файла любым доступным способом:
+
+```bash
+# Через scp
+scp distrib/docker-images/images.tar.gz docker-compose.offline.yml .env user@server:/opt/rag/
+
+# Через rsync
+rsync -avz distrib/docker-images/images.tar.gz docker-compose.offline.yml .env user@server:/opt/rag/
+
+# Через физический носитель (USB, NAS) — скопируйте те же три файла
+```
+
+### 4. Импорт образов на целевом сервере
+
+```bash
+cd /opt/rag
+
+gunzip -c images.tar.gz | docker load
+# если архив без сжатия:
+# docker load -i images.tar
+
+# Проверка загруженных образов
+docker images | grep -E 'dds-app|qdrant'
+
+# Ожидаемый вывод:
+# dds-app        latest    <image-id>    <size>    <date>
+# qdrant/qdrant  latest    <image-id>    <size>    <date>
+```
+
+Тег должен быть ровно `dds-app:latest` — именно его ищет `docker-compose.offline.yml`.
+
+### 6. Настройка и запуск
+
+Создайте файл `.env` в корневой директории проекта:
+
+```bash
+cat > .env << EOF
+# Сервис
+SERVICE_PORT=8000
+SERVICE_HOST=0.0.0.0
+
+# Qdrant
+QDRANT_URL=http://qdrant:6333
+QDRANT_API_KEY=
+
+# Модель
+EMBEDDING_MODEL=BAAI/bge-m3
+
+# Аутентификация
+RAG_SERVICE_API_KEY=<ваш-секретный-api-key>
+
+# Логирование
+LOG_LEVEL=INFO
+
+# MCP (если нужен)
+MCP_AUTH_ENABLED=true
+EOF
+```
+
+Запуск через offline-компоу:
+
+```bash
+# Запуск сервисов
+docker compose -f docker-compose.offline.yml up -d
+
+# Проверка статуса
+docker compose ps
+
+# Ожидаемый вывод:
+# NAME                STATUS
+# rag-qdrant-1        Up (healthy)
+# rag-app-1           Up (healthy)
+
+# Проверка здоровья приложения
+curl http://localhost:8000/health
+
+# Ожидаемый ответ:
+# {"status": "healthy"}
+
+# Просмотр логов
+docker compose logs -f app
+```
+
+### 7. Проверка работоспособности
+
+```bash
+# Health check
+curl http://localhost:8000/health
+
+# Swagger UI (в браузере)
+# http://localhost:8000/docs
+
+# Загрузка тестового документа (опционально)
+curl -X POST http://localhost:8000/api/documents/upload \
+  -H "Authorization: Bearer <ваш-api-key>" \
+  -H "Content-Type: multipart/form-data" \
+  -F "file=@test_document.pdf"
+
+# Поиск по документам
+curl -X POST http://localhost:8000/api/documents/search \
+  -H "Authorization: Bearer <ваш-api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "тестовый запрос", "top_k": 5}'
+```
+
+### 8. Остановка и обновление
+
+```bash
+# Остановка
+docker compose -f docker-compose.offline.yml down
+
+# Остановка с очисткой volumes
+docker compose -f docker-compose.offline.yml down -v
+
+# Обновление (повторная загрузка нового tar)
+docker load -i new-dds-app-latest.tar
+docker compose -f docker-compose.offline.yml up -d --no-deps app
+```
+
+### Решение проблем при оффлайн-развёртывании
+
+#### Проблема: Ошибка «image not found»
+
+```bash
+# Проверка, загружен ли образ
+docker images | grep dds-app
+
+# Если образа нет — повторите docker load
+docker load -i distrib/docker-images/dds-app-cpu_latest.tar
+```
+
+#### Проблема: Приложение не запускается
+
+```bash
+# Проверка логов
+docker compose -f docker-compose.offline.yml logs app
+
+# Проверка сети
+docker network ls
+docker network inspect rag_dds_network
+
+# Проверка портов
+netstat -tulpn | grep 8000
+```
+
+#### Проблема: Qdrant не подключается
+
+```bash
+# Проверка Qdrant
+curl http://localhost:6333/health
+
+# Перезапуск Qdrant
+docker compose -f docker-compose.offline.yml restart qdrant
+```
+
+#### Проблема: Нехватка места на диске
+
+```bash
+# Проверка используемого места
+docker system df
+
+# Очистка неиспользуемых образов
+docker image prune -a
+
+# Проверка диска
+df -h
+```
 
 ---
 

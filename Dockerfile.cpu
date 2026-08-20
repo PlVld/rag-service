@@ -9,13 +9,17 @@
 
 FROM python:3.11-slim AS model-downloader
 
-# Настройка переменных для офлайн-режима
-ENV HF_HUB_OFFLINE=1
-ENV TRANSFORMERS_OFFLINE=1
+# УСТАНОВИТЬ ОНЛАЙН для скачивания модели
+ENV HF_HUB_OFFLINE=0
+ENV TRANSFORMERS_OFFLINE=0
 
-# Загружаем модель bge-m3
+# Устанавливаем только нужные пакеты для скачивания модели
 RUN pip install --no-cache-dir sentence-transformers transformers huggingface_hub
-RUN python -c "from sentence_transformers import SentenceTransformer; model = SentenceTransformer('BAAI/bge-m3', local_files_only=False)"
+
+# Скачиваем модель bge-m3 в /app/model_cache
+ENV HF_HOME=/app/model_cache
+RUN mkdir -p /app/model_cache && \
+    python -c "from sentence_transformers import SentenceTransformer; model = SentenceTransformer('BAAI/bge-m3', local_files_only=False)"
 
 # =============================================================================
 # Этап 1: Сборщик зависимостей (CPU-only)
@@ -33,6 +37,15 @@ WORKDIR /app
 COPY requirements-cpu.txt .
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements-cpu.txt
+
+# =============================================================================
+# Этап 1.5: Модели Docling (layout + tableformer)
+# Кладём в образ, потому что в финальной стадии стоит HF_HUB_OFFLINE=1
+# и скачать их в рантайме уже нельзя.
+# =============================================================================
+FROM builder AS docling-models
+
+RUN docling-tools models download -o /docling_models layout tableformer
 
 # =============================================================================
 # Этап 2: Финальный образ
@@ -58,16 +71,15 @@ COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/pytho
 COPY --from=builder /usr/local/bin /usr/local/bin
 
 # Копирование модели bge-m3 из model-downloader
-COPY --from=model-downloader /root/.cache/huggingface/hub /app/model_cache/hub
+COPY --from=model-downloader /app/model_cache /app/model_cache
 
-# Копирование docling моделей (если скопированы в образ при сборке)
-# RUN mkdir -p /app/docling_cache 2>/dev/null || true
-# COPY docling_cache/ /app/docling_cache/ 2>/dev/null || true
+# Модели Docling. Путь /app/models ищет app/text_cleaning/bundled_tools.py
+COPY --from=docling-models /docling_models /app/models
 
 WORKDIR /app
 
 # Создаём пустые директории для моделей
-RUN mkdir -p /app/model_cache /app/docling_cache /app/uploads
+RUN mkdir -p /app/model_cache /app/uploads
 
 # Копирование исходного кода
 COPY ./app /app/app
@@ -77,9 +89,6 @@ ENV HF_HOME=/app/model_cache
 ENV TRANSFORMERS_CACHE=/app/model_cache
 ENV SENTENCE_TRANSFORMERS_HOME=/app/model_cache
 ENV HF_HUB_OFFLINE=1
-
-# Переменные для Docling моделей
-ENV DOCLING_MODELS_PATH=/app/docling_cache
 
 # Переменная окружения для poppler (Linux)
 ENV POPPLER_PATH=/usr/bin

@@ -23,6 +23,15 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements.txt
 
 # =============================================================================
+# Этап 1.5: Модели Docling (layout + tableformer)
+# Кладём в образ, потому что в финальной стадии стоит HF_HUB_OFFLINE=1
+# и скачать их в рантайме уже нельзя.
+# =============================================================================
+FROM builder AS docling-models
+
+RUN docling-tools models download -o /docling_models layout tableformer
+
+# =============================================================================
 # Этап 2: Финальный образ
 # =============================================================================
 FROM python:3.11-slim
@@ -46,6 +55,9 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 RUN mkdir -p /app/model_cache
 COPY --from=model-downloader /root/.cache/huggingface/hub /app/model_cache/hub
 
+# Модели Docling. Путь /app/models ищет app/text_cleaning/bundled_tools.py
+COPY --from=docling-models /docling_models /app/models
+
 WORKDIR /app
 
 # Переменные окружения для кэша моделей.
@@ -54,9 +66,6 @@ ENV HF_HOME=/app/model_cache
 ENV TRANSFORMERS_CACHE=/app/model_cache
 ENV SENTENCE_TRANSFORMERS_HOME=/app/model_cache
 ENV HF_HUB_OFFLINE=1
-
-# Переменные для Docling моделей (также из volume mount)
-ENV DOCLING_MODELS_PATH=/app/model_cache
 
 # Переменная окружения для poppler (Linux)
 ENV POPPLER_PATH=/usr/bin

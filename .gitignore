@@ -64,6 +64,10 @@ dmypy.json
 qdrant_data/
 model_cache/
 docling_cache/
+# Модели Docling, скачиваются через `docling-tools models download -o ./models`
+models/
+# Portable-копия Tesseract-OCR для Windows
+tesseract/
 uploads/
 
 # ============================================================
@@ -81,3 +85,4 @@ Thumbs.db
 # AI Assistant
 # ============================================================
 .gigacode/
+/.claude/
