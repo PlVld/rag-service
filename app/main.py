@@ -10,7 +10,7 @@ from pydantic import ValidationError
 from app.api.health import get_client
 
 from starlette.middleware.base import BaseHTTPMiddleware
-from app.api import documents, health, categories, files, admin
+from app.api import documents, health, categories, files, admin, docs
 from app.core.config import settings
 
 # Настройка логирования из конфигурации
@@ -97,6 +97,7 @@ app.include_router(health.router)
 app.include_router(categories.router)
 app.include_router(files.router)
 app.include_router(admin.router)
+app.include_router(docs.router)
 
 # Раздача изображений, извлечённых из документов.
 # Доступ без токена: рендерер Markdown или модель не подставят заголовок Authorization

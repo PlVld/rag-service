@@ -140,12 +140,13 @@ def _load_model(offline: bool = True) -> SentenceTransformer:
     logger.info(f"Offline mode: {offline}")
 
     try:
-        # Исправленная конфигурация для загрузки модели
+        # Устанавливаем HF_HOME для правильного кэширования (современный API)
+        os.environ["HF_HOME"] = CACHE_DIR
+        
         model_kwargs = {
             "trust_remote_code": True,
             "local_files_only": offline,  # Важно для офлайн-режима
             "revision": None,
-            "cache_dir": CACHE_DIR,
         }
 
         # Принудительно отключаем safetensors проверку, если есть проблемы
