@@ -27,6 +27,26 @@ def generate_uuid_from_parts(parts: List[Any], namespace: uuid.UUID = uuid.NAMES
     # Используем uuid5 для детерминированного ID на основе строки
     return str(uuid.uuid5(namespace, unique_string))
 
+
+def apply_category_levels(payload: Dict[str, Any], category_list: List[str]) -> None:
+    """
+    Записывает в payload поля уровней категорий (category_path, category_levelN,
+    category_id_levelN, category_level) для переданного пути.
+    Старые поля category_levelN / category_id_levelN предварительно удаляются,
+    чтобы не оставались уровни глубже нового пути.
+    При пустом пути payload не изменяется (сохраняются существующие поля).
+    """
+    if not category_list:
+        return
+    for key in list(payload.keys()):
+        if key.startswith("category_level") or key.startswith("category_id_level"):
+            del payload[key]
+    payload["category_path"] = " / ".join(category_list)
+    for i, category in enumerate(category_list):
+        payload[f"category_level{i}"] = category
+        payload[f"category_id_level{i}"] = generate_uuid_from_parts([" / ".join(category_list[:i + 1])])
+    payload["category_level"] = len(category_list) - 1
+
 def compute_doc_hash(text: str) -> str:
     """Вычисляет MD5-хеш всего текста документа."""
     return hashlib.md5(text.encode('utf-8')).hexdigest()

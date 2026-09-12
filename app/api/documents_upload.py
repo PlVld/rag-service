@@ -24,7 +24,7 @@ from app.models.common import DocumentsUploadRequest
 from app.text_cleaning.pipeline import TextCleanerPipeline
 from app.text_cleaning.heading_splitter import parse_heading_sections, build_full_category_path
 from app.text_cleaning.normalizer import normalize_for_embedding
-from app.utils import generate_uuid_from_parts, compute_doc_hash
+from app.utils import generate_uuid_from_parts, compute_doc_hash, apply_category_levels
 from app.repository.qdrant_repository import QdrantBatchWriter
 from qdrant_client.http import models as qdrant_models
 from qdrant_client.http.exceptions import UnexpectedResponse
@@ -162,10 +162,11 @@ async def process_documents(
             logger.info(f"Will mark old chunks of {source_id} as not latest")
             
         # Обновляем метаданные.
-        # Сохраняем существующие level-поля из старой версии, если они есть
-        if existing_points:
+        # Сохраняем level-поля из старой версии, только если новая загрузка
+        # не задаёт свой путь категорий (иначе старые ID затрут новые)
+        if existing_points and not category_path_list:
             for key, value in existing_points[0].payload.items():
-                if key.startswith("category_level") and key not in doc_metadata:
+                if (key.startswith("category_level") or key.startswith("category_id_level")) and key not in doc_metadata:
                     doc_metadata[key] = value
 
         # Конвертируем в Markdown (до разбиения на секции по заголовкам)
@@ -221,20 +222,11 @@ async def process_documents(
             full_cat_path = build_full_category_path(doc_category_list, section.heading_hierarchy)
 
             if full_cat_path:
-                # Добавляем или обновляем информацию о категории
-                section_metadata["category_path"] = " / ".join(full_cat_path)
-                # Добавляем уровни категорий (category_level0, category_level1, ...)
-                for i, category in enumerate(full_cat_path):
-                    section_metadata[f"category_level{i}"] = category
-                    # Проверяем, есть ли уже category_id_level в doc_metadata, чтобы избежать конфликта
-                    if f"category_id_level{i}" not in section_metadata:
-                        # Генерируем и добавляем ID для каждого уровня категории
-                        full_path_for_id = " / ".join(full_cat_path[:i + 1])
-                        category_id = generate_uuid_from_parts([full_path_for_id])
-                        section_metadata[f"category_id_level{i}"] = category_id
-                # Добавляем поле category_level - номер последнего уровня
-                section_metadata["category_level"] = len(full_cat_path) - 1
-                
+                # Перезаписываем уровни категорий и их ID из нового пути
+                # (apply_category_levels предварительно удаляет старые поля,
+                # чтобы не оставались уровни глубже нового пути)
+                apply_category_levels(section_metadata, full_cat_path)
+
                 # Добавляем путь в множество для последующего обновления иерархии
                 category_paths_to_update.add(tuple(full_cat_path))
             else:

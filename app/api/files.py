@@ -19,7 +19,7 @@ from app.utils import create_file_upload_response, create_batch_upload_response,
 from app.api.documents import process_documents
 from app.models.common import DocumentsUploadRequest, DocumentCreate
 from app.core.config import settings
-from app.utils import generate_uuid_from_parts
+from app.utils import generate_uuid_from_parts, apply_category_levels
 from app.api.health import get_client
 from qdrant_client.http import models as qdrant_models
 from qdrant_client.http.exceptions import UnexpectedResponse
@@ -503,6 +503,7 @@ async def _update_point_payload(
     new_payload = point.payload.copy()
 
     # Удаляем старые поля категорий ТОЛЬКО если переданы новые категории
+    # (category_id_level* ниже будут перегенерированы заново из нового пути)
     if category_list:
         keys_to_remove = [k for k in new_payload.keys() if k.startswith('category_')]
         for k in keys_to_remove:
@@ -522,14 +523,7 @@ async def _update_point_payload(
 
     # Обработка категорий (только если передан непустой список)
     if category_list:
-        # Преобразуем путь категорий в строку
-        new_payload["category_path"] = " / ".join(category_list)
-        
-        # Добавляем уровни категорий (category_level0, category_level1, ...)
-        for i, category in enumerate(category_list):
-            new_payload[f"category_level{i}"] = category
-        # Добавляем поле category_level - номер последнего уровня
-        new_payload["category_level"] = len(category_list) - 1
+        apply_category_levels(new_payload, category_list)
     else:
         # Если категории не переданы, сохраняем существующее значение category_path (если есть)
         if "category_path" not in new_payload:
