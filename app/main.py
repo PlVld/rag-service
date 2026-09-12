@@ -176,7 +176,7 @@ class MCPAuthMiddleware(BaseHTTPMiddleware):
                                 headers={"WWW-Authenticate": "Bearer"})
             try:
                 bearer_token = auth.split(" ", 1)[1]
-                diag_logger.info("MCP Auth attempt: token='%s...'", bearer_token[:8])
+                diag_logger.info("MCP Auth attempt (token не логируется)")
             except (ValueError, TypeError, IndexError):
                 return Response(status_code=401, content="Invalid authentication",
                                 headers={"WWW-Authenticate": "Bearer"})

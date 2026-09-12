@@ -38,9 +38,8 @@ python-magic-bin>=0.4.14; sys_platform == "win32"  # libmagic для Windows (н
 docling==2.118.0             # для конвертации документов в Markdown с распознаванием изображений
 starlette>=0.41.0            # для middlewares и lifespan events
 
-# Для CPU-only развертывания (без CUDA)
-# Используем cpuonly мета-пакет для автоматической установки CPU-версии PyTorch
-torch==2.6.0+cpu
-torchvision==0.21.0+cpu
-torchaudio==2.6.0
---extra-index-url https://download.pytorch.org/whl/cpu
+# PyTorch: версия по умолчанию (GPU или CPU — зависит от платформы).
+# Для CPU-only установки используйте requirements-cpu.txt
+torch>=2.6.0
+torchvision>=0.21.0
+torchaudio>=2.6.0
