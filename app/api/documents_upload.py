@@ -161,13 +161,11 @@ async def process_documents(
             batch_writer.mark_old_versions_not_latest(request.collection_name, source_id, keep_version=doc_version)
             logger.info(f"Will mark old chunks of {source_id} as not latest")
             
-        # Обновляем метаданные.
-        # Сохраняем level-поля из старой версии, только если новая загрузка
-        # не задаёт свой путь категорий (иначе старые ID затрут новые)
-        if existing_points and not category_path_list:
-            for key, value in existing_points[0].payload.items():
-                if (key.startswith("category_level") or key.startswith("category_id_level")) and key not in doc_metadata:
-                    doc_metadata[key] = value
+        # Наследуем цепочку перемещений от предыдущей версии, если она не передана
+        if existing_points and "prev_source_ids" not in doc_metadata:
+            prev_ids = existing_points[0].payload.get("prev_source_ids")
+            if prev_ids:
+                doc_metadata["prev_source_ids"] = prev_ids
 
         # Конвертируем в Markdown (до разбиения на секции по заголовкам)
         if source_format in ('markdown', 'code'):

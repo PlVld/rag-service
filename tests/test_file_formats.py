@@ -544,3 +544,70 @@ def test_docling_docx_image_link_rewritten_to_url(tmp_path, monkeypatch):
     assert saved, "Картинка должна быть сохранена"
     assert f"/media/src-docx/0123456789abcdef/images/{saved[0].name}" in markdown
     assert "\\" not in markdown
+
+
+def _scroll_points_by_source(client, collection_name, source_id):
+    """Возвращает все точки заданного source_id из коллекции."""
+    points, _ = client.scroll(
+        collection_name=collection_name,
+        scroll_filter=qdrant_models.Filter(
+            must=[
+                qdrant_models.FieldCondition(key="source_id", match=qdrant_models.MatchValue(value=source_id)),
+                qdrant_models.FieldCondition(key="is_latest", match=qdrant_models.MatchValue(value=True)),
+            ]
+        ),
+        limit=100,
+        with_payload=True,
+    )
+    return list(points)
+
+
+@pytest.mark.integration
+def test_reupload_same_file_updates_all_chunks(test_collection, rest_api_client):
+    """Повторная загрузка неизменившегося файла обновляет метаданные всех чанков версии.
+
+    Регрессия: раньше scenario A/B обновлял payload только одной точки
+    (scroll с limit=1), остальные чанки той же версии оставались со старыми
+    file_path/категориями.
+    """
+    # Текст заведомо больше одного чанка (chunk_size=512)
+    text = ("Альфа-тестирование проверяет базовую работоспособность модуля. "
+            "Бета-тестирование проводится на реальных данных. ") * 30
+
+    def upload(file_path):
+        return rest_api_client.post(
+            "/v1/files/upload",
+            files={"file": ("doc.txt", text.encode("utf-8"), "text/plain")},
+            data={
+                "collection_name": test_collection,
+                "source_format": "text",
+                "file_path": file_path,
+            },
+            headers=get_auth_headers(),
+        )
+
+    first = upload("/old/path/doc.txt")
+    assert first.status_code == 200, first.text
+    first_data = first.json()["data"]
+    assert first_data["status"] == "created"
+    assert first_data["uploaded_chunks"] > 1, "Тест требует документ из нескольких чанков"
+    source_id = first_data["source_id"]
+
+    time.sleep(1)
+    points_before = _scroll_points_by_source(get_client(), test_collection, source_id)
+    assert len(points_before) == first_data["uploaded_chunks"]
+
+    second = upload("/new/path/doc.txt")
+    assert second.status_code == 200, second.text
+    second_data = second.json()["data"]
+    assert second_data["status"] == "updated"
+    assert second_data["version"] == first_data["version"], "Хеш не изменился — новая версия не создаётся"
+    assert second_data["uploaded_chunks"] == first_data["uploaded_chunks"], \
+        "Должны обновиться все чанки версии, а не один"
+
+    time.sleep(1)
+    points_after = _scroll_points_by_source(get_client(), test_collection, source_id)
+    assert len(points_after) == len(points_before)
+    for p in points_after:
+        assert p.payload["file_path"] == "/new/path/doc.txt", \
+            f"Чанк {p.id} не получил обновлённый file_path"

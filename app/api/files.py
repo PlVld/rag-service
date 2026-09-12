@@ -394,16 +394,24 @@ def parse_category_path(category_path: Optional[Union[str, List[str]]]) -> List[
 
 
 def _prepare_source_id_and_categories(
-    source_id: Optional[str],
     category_path: Optional[str],
+    new_category_path: Optional[str],
     filename: str
-) -> Tuple[str, List[str]]:
+) -> Tuple[str, List[str], List[str]]:
+    """
+    Вычисляет source_id из категории поиска и имени файла, парсит обе категории.
+
+    source_id всегда определяется сервером: gen(категория_поиска + имя_файла).
+    Категория поиска идентифицирует существующий документ, новая категория —
+    категорию присвоения при перемещении.
+
+    Returns:
+        Tuple[str, List[str], List[str]]: (source_id, категория поиска, новая категория).
+    """
     category_list = parse_category_path(category_path) if category_path else []
-    effective_source_id = source_id
-    if not effective_source_id:
-        parts = category_list + [filename]
-        effective_source_id = generate_uuid_from_parts(parts)
-    return effective_source_id, category_list
+    new_category_list = parse_category_path(new_category_path) if new_category_path else []
+    effective_source_id = generate_uuid_from_parts(category_list + [filename])
+    return effective_source_id, category_list, new_category_list
 
 
 async def check_existing_document(collection_name: str, source_id: str, doc_hash: str) -> List[Any]:
@@ -416,10 +424,10 @@ async def check_existing_document(collection_name: str, source_id: str, doc_hash
         doc_hash (str): Хеш документа.
 
     Returns:
-        List[Any]: Список найденных точек (обычно 0 или 1).
+        List[Any]: Все точки (чанки) последней версии с заданными source_id и doc_hash.
     """
     logger.debug(f"Checking for existing document with source_id={source_id}, doc_hash={doc_hash} in collection {collection_name}")
-    
+
     client = get_client()
     filter_cond = qdrant_models.Filter(
         must=[
@@ -428,16 +436,17 @@ async def check_existing_document(collection_name: str, source_id: str, doc_hash
             qdrant_models.FieldCondition(key="is_latest", match=qdrant_models.MatchValue(value=True)),
         ]
     )
-    
+
     try:
-        points, _ = await client.scroll(
+        points = await scroll_all_pages(
+            client=client,
             collection_name=collection_name,
             scroll_filter=filter_cond,
-            limit=1,
+            limit=1000,
             with_payload=True,
-            with_vectors=True
+            with_vectors=True,
         )
-        logger.info(f"Found {len(points)} existing document(s) with matching source_id and doc_hash")
+        logger.info(f"Found {len(points)} existing chunk(s) with matching source_id and doc_hash")
         return points
         
     except UnexpectedResponse as e:
@@ -551,11 +560,11 @@ async def _create_document(
     collection_name: str,
     batch_writer: QdrantBatchWriter,
     mark_old: bool = False,
+    prev_source_ids: Optional[List[str]] = None,
 ) -> Tuple[List[str], List[str], List[Dict]]:
     """
     Создаёт документ (первую версию или новую) через process_documents.
     Если mark_old=True, предварительно помечает старые версии как неактуальные.
-    Возвращает (updated_source_ids, point_ids).
 
     Args:
         text_content (str): Текстовое содержимое документа.
@@ -570,6 +579,8 @@ async def _create_document(
         collection_name (str): Название коллекции.
         batch_writer (QdrantBatchWriter): Писатель для пакетной записи.
         mark_old (bool): Пометить старые версии как неактуальные.
+        prev_source_ids (Optional[List[str]]): Цепочка source_id предыдущих положений
+            документа (заполняется при перемещении между категориями).
 
     Returns:
         Tuple[List[str], List[str]]: Кортеж из списков обновленных source_id и идентификаторов точек.
@@ -592,6 +603,8 @@ async def _create_document(
         "doc_hash": doc_hash,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
+    if prev_source_ids:
+        doc_metadata["prev_source_ids"] = list(prev_source_ids)
     
     # category_path передается отдельно в DocumentCreate, не добавляем в payload
 
@@ -616,29 +629,144 @@ async def _create_document(
         raise
 
 
+async def _move_document_to_category(
+    collection_name: str,
+    old_source_id: str,
+    old_latest_points: List[Any],
+    new_category_list: List[str],
+    source_format: str,
+    file: UploadFile,
+    file_path: Optional[str],
+    temp_path: str,
+    doc_hash: str,
+    batch_writer: QdrantBatchWriter,
+) -> dict:
+    """
+    Перемещает документ в другую категорию.
+
+    Все версии старого source_id помечаются неактуальными, документ создаётся заново
+    под source_id = gen(новая категория + имя файла); в payload пишется цепочка
+    перемещений prev_source_ids. Версия — сквозная по обоим source_id.
+
+    Категория входит в текст, по которому строится эмбеддинг, поэтому при перемещении
+    документ всегда обрабатывается заново — чанки и векторы создаются под новую
+    категорию, копирование векторов недопустимо. Если в целевой категории уже лежит
+    документ с тем же содержимым, новая версия не создаётся: цепочка перемещений
+    дописывается в существующие чанки цели.
+    """
+    new_source_id = generate_uuid_from_parts(new_category_list + [file.filename])
+    target_points = await get_all_points_for_source(collection_name, new_source_id)
+    target_latest = [p for p in target_points if p.payload.get("is_latest")]
+
+    old_version = max((p.payload.get("version", 1) for p in old_latest_points), default=1)
+    target_version = max((p.payload.get("version", 1) for p in target_latest), default=0)
+    target_hash = target_latest[0].payload.get("doc_hash") if target_latest else None
+    prev_source_ids = list(old_latest_points[0].payload.get("prev_source_ids") or []) + [old_source_id]
+
+    # Целевой документ уже содержит точно такое же содержимое — новая версия не нужна:
+    # достаточно пометить старый документ неактуальным и дописать цепочку перемещений
+    # (категории цели не меняются, её векторы остаются корректными)
+    if target_hash == doc_hash:
+        merged_prev = list(target_latest[0].payload.get("prev_source_ids") or []) + [old_source_id]
+        batch_writer.mark_old_versions_not_latest(collection_name, old_source_id, keep_version=None)
+        chunk_ids = []
+        for point in target_latest:
+            payload = point.payload.copy()
+            payload["prev_source_ids"] = merged_prev
+            payload["original_filename"] = file.filename
+            payload["file_path"] = file_path or payload.get("file_path")
+            batch_writer.add_point(collection_name, qdrant_models.PointStruct(
+                id=point.id, vector=point.vector, payload=payload))
+            chunk_ids.append(point.id)
+        logger.info(
+            f"Moved document {old_source_id} -> {new_source_id}: target already has same content, "
+            f"updated {len(chunk_ids)} chunk(s) in place"
+        )
+        return {
+            "status": "moved",
+            "source_id": new_source_id,
+            "version": target_latest[0].payload.get("version"),
+            "is_latest": True,
+            "content_hash": doc_hash,
+            "uploaded_chunks": len(chunk_ids),
+            "chunk_ids": chunk_ids,
+            "prev_source_ids": merged_prev,
+        }
+
+    # Сначала извлекаем текст, только потом помечаем старые документы неактуальными
+    text_content = await extract_text_from_file(temp_path, new_source_id, doc_hash)
+    if not text_content:
+        return {
+            "status": "file is null, skipped",
+            "source_id": None,
+            "version": None,
+            "is_latest": None,
+            "content_hash": None,
+            "uploaded_chunks": 0,
+            "chunk_ids": [],
+            "error_message": None
+        }
+
+    new_version = max(old_version, target_version) + 1
+    batch_writer.mark_old_versions_not_latest(collection_name, old_source_id, keep_version=None)
+    if target_points:
+        # keep_version=new_version: новые точки этого документа уже добавлены в
+        # batch_writer и при commit() уходят upsert-ом раньше пометки is_latest=False,
+        # поэтому свежесозданная версия исключается из пометки
+        batch_writer.mark_old_versions_not_latest(collection_name, new_source_id, keep_version=new_version)
+
+    # Полная переобработка под новый source_id (векторы зависят от категории)
+    _, point_ids, _ = await _create_document(
+        text_content, new_source_id, new_version, source_format,
+        file, file_path, temp_path, new_category_list, doc_hash,
+        collection_name, batch_writer, mark_old=False, prev_source_ids=prev_source_ids
+    )
+    cleanup_other_versions(new_source_id, doc_hash)
+    logger.info(
+        f"Moved document {old_source_id} -> {new_source_id} (v{new_version}) "
+        f"with reprocessing, {len(point_ids)} chunk(s)"
+    )
+    return {
+        "status": "moved",
+        "source_id": new_source_id,
+        "version": new_version,
+        "is_latest": True,
+        "content_hash": doc_hash,
+        "uploaded_chunks": len(point_ids),
+        "chunk_ids": point_ids,
+        "prev_source_ids": prev_source_ids,
+    }
+
+
 async def process_single_file(
     file: UploadFile,
     collection_name: str,
     source_format: str,
     batch_writer: QdrantBatchWriter,
-    source_id: Optional[str] = None,
     file_path: Optional[str] = None,
     category_path: Optional[str] = None,
+    new_category_path: Optional[str] = None,
     skip_if_exists: bool = False,
 ) -> dict:
     """
     Обрабатывает один загруженный файл: сохраняет, проверяет дубликаты,
     создает или обновляет документ в коллекции.
 
+    source_id всегда вычисляется сервером из категории поиска и имени файла.
+    Если передана новая категория, отличная от категории поиска, и документ
+    по ней найден — документ перемещается (см. _move_document_to_category);
+    если не найден — файл создаётся под новой категорией.
+
     Args:
         file (UploadFile): Загруженный файл.
         collection_name (str): Название коллекции для сохранения.
         source_format (str): Формат источника (например, 'text', 'pdf').
         batch_writer (QdrantBatchWriter): Писатель для пакетной записи в Qdrant.
-        source_id (Optional[str]): Идентификатор источника. Если не указан, генерируется.
         file_path (Optional[str]): Путь к файлу. Если не указан, используется временный путь.
-        category_path (Optional[str]): Путь категорий в виде JSON строки или списка.
-        skip_if_exists (bool): Пропускать ли файл, если он уже существует.
+        category_path (Optional[str]): Категория поиска в виде JSON строки или списка.
+        new_category_path (Optional[str]): Новая категория (присвоение) в виде JSON строки или списка.
+        skip_if_exists (bool): Пропускать ли файл, если он уже существует
+            (игнорируется при перемещении в другую категорию).
 
     Returns:
         dict: Результат обработки с информацией о статусе, source_id, версии и других деталях.
@@ -661,7 +789,31 @@ async def process_single_file(
         temp_path, file_size, doc_hash = await save_file_and_compute_hash(file)
         # Убрано логирование сохранения файла - операция быстрая и надежная
 
-        effective_source_id, category_list = _prepare_source_id_and_categories(source_id, category_path, file.filename)
+        effective_source_id, category_list, new_category_list = _prepare_source_id_and_categories(
+            category_path, new_category_path, file.filename
+        )
+
+        # Перемещение в другую категорию: документ найден по категории поиска,
+        # новая категория передана и отличается. skip_if_exists игнорируется.
+        if new_category_list and new_category_list != category_list:
+            all_points = await get_all_points_for_source(collection_name, effective_source_id)
+            latest_points = [p for p in all_points if p.payload.get("is_latest")]
+            if latest_points:
+                return await _move_document_to_category(
+                    collection_name=collection_name,
+                    old_source_id=effective_source_id,
+                    old_latest_points=latest_points,
+                    new_category_list=new_category_list,
+                    source_format=source_format,
+                    file=file,
+                    file_path=file_path,
+                    temp_path=temp_path,
+                    doc_hash=doc_hash,
+                    batch_writer=batch_writer,
+                )
+            # По категории поиска документ не найден — это новый файл под новой категорией
+            category_list = new_category_list
+            effective_source_id = generate_uuid_from_parts(category_list + [file.filename])
 
         existing_points = await check_existing_document(collection_name, effective_source_id, doc_hash)
         # Убрано логирование количества существующих точек - операция быстрая и не критичная
@@ -725,25 +877,27 @@ async def process_single_file(
 
         if all_points:
             max_version = max(p.payload.get("version", 1) for p in all_points)
-            current_point = next(p for p in all_points if p.payload.get("version") == max_version)
-            existing_hash = current_point.payload.get("doc_hash")
+            latest_points = [p for p in all_points if p.payload.get("version") == max_version]
+            existing_hash = latest_points[0].payload.get("doc_hash")
 
             if existing_hash == doc_hash:
                 # Убрано логирование совпадения содержимого - операция быстрая и не требует мониторинга
                 batch_writer.mark_old_versions_not_latest(
                     collection_name, effective_source_id, keep_version=max_version
                 )
-                updated_point = await _update_point_payload(
-                    current_point, file_path, category_list, source_format,
-                    file.filename, doc_hash
-                )
-                batch_writer.add_point(collection_name, updated_point)
+                # Обновляем метаданные всех чанков последней версии
+                for point in latest_points:
+                    updated_point = await _update_point_payload(
+                        point, file_path, category_list, source_format,
+                        file.filename, doc_hash
+                    )
+                    batch_writer.add_point(collection_name, updated_point)
                 os.unlink(temp_path)
                 # Обновление результата (повторяющийся фрагмент с другими сценариями)
                 result.update({
                     "status": "updated",
-                    "uploaded_chunks": 1,
-                    "chunk_ids": [current_point.id],
+                    "uploaded_chunks": len(latest_points),
+                    "chunk_ids": [p.id for p in latest_points],
                     "source_id": effective_source_id,
                     "version": max_version,
                     "is_latest": True,
@@ -821,26 +975,32 @@ async def process_single_file(
             except (OSError, IOError):
                 pass
 
-    # Prepare standardized response using response utility
+    return result
+
+
+def _finalize_file_response(result: dict, original_filename: Optional[str], collection_name: str) -> dict:
+    """
+    Оборачивает сырой результат process_single_file в стандартизированный ответ
+    (единый формат для одиночной и пакетной загрузки).
+    """
     response = create_file_upload_response(
         status=result.get("status"),
         source_id=result.get("source_id"),
         version=result.get("version"),
-        is_latest=bool(result.get("is_latest")),
+        is_latest=bool(result.get("is_latest")) if result.get("is_latest") is not None else None,
         content_hash=result.get("content_hash"),
         uploaded_chunks=result.get("uploaded_chunks", 0),
-        chunk_ids=result.get("chunk_ids", []),
-        original_filename=file.filename,
+        chunk_ids=result.get("chunk_ids") or [],
+        original_filename=original_filename,
         collection_name=collection_name,
         error_code="processing_error" if result.get("error_message") else None,
         error_message=result.get("error_message")
     )
-
-    # Добавляем поле status в data, если оно существует
     data = response.get("data")
-    if data is not None and "status" not in data:
-        data["status"] = result.get("status")
-
+    if data is not None:
+        data.setdefault("status", result.get("status"))
+        if result.get("prev_source_ids"):
+            data["prev_source_ids"] = result["prev_source_ids"]
     return response
 
 @router.post("/upload/batch",
@@ -896,42 +1056,28 @@ async def upload_files_batch(
     batch_writer = QdrantBatchWriter()
     results = []
     for i, (file, meta) in enumerate(zip(files, metadatas)):
-        source_id = meta.get("source_id")
         file_path = meta.get("file_path")
         source_format = meta.get("source_format")
         category_path = meta.get("category_path")
+        new_category_path = meta.get("new_category_path")
 
         result = await process_single_file(
             file=file,
             collection_name=collection_name,
             source_format=source_format,
             batch_writer=batch_writer,
-            source_id=source_id,
             file_path=file_path,
             category_path=category_path,
+            new_category_path=new_category_path,
             skip_if_exists=skip_if_exists,
         )
         results.append(result)
 
     await batch_writer.commit()
-    # Prepare standardized response for batch upload using response utility
     batch_results = []
-    for result in results:
-        batch_result = create_file_upload_response(
-            status=result.get("status"),
-            source_id=result.get("source_id"),
-            version=result.get("version"),
-            is_latest=result.get("is_latest"),
-            content_hash=result.get("content_hash"),
-            uploaded_chunks=result.get("uploaded_chunks", 0),
-            chunk_ids=result.get("chunk_ids", []),
-            original_filename=result.get("original_filename"),
-            collection_name=collection_name,
-            error_code="processing_error" if result.get("error_message") else None,
-            error_message=result.get("error_message")
-        )
-        batch_results.append(batch_result)
-    
+    for file, result in zip(files, results):
+        batch_results.append(_finalize_file_response(result, file.filename, collection_name))
+
     return create_batch_upload_response(batch_results, len(files))
 
 
@@ -942,9 +1088,9 @@ async def upload_file(
     file: UploadFile = File(...),
     collection_name: str = Form(...),
     source_format: str = Form(...),
-    source_id: Optional[str] = Form(None),
     file_path: Optional[str] = Form(None),
     category_path: Optional[str] = Form(None),
+    new_category_path: Optional[str] = Form(None),
     skip_if_exists: bool = Form(False),
 ):
     batch_writer = QdrantBatchWriter()
@@ -953,13 +1099,115 @@ async def upload_file(
         collection_name=collection_name,
         source_format=source_format,
         batch_writer=batch_writer,
-        source_id=source_id,
         file_path=file_path,
         category_path=category_path,
+        new_category_path=new_category_path,
         skip_if_exists=skip_if_exists,
     )
     await batch_writer.commit()
-    return result
+    return _finalize_file_response(result, file.filename, collection_name)
+
+
+async def _compute_upload_hash(file: UploadFile) -> str:
+    """
+    Вычисляет SHA256-хеш загруженного файла без сохранения на диск.
+
+    Raises:
+        HTTPException: Если файл пустой или превышает максимальный размер.
+    """
+    hasher = hashlib.sha256()
+    file_size = 0
+    max_file_size = settings.max_file_size_mb * 1024 * 1024
+    while chunk := await file.read(8192):
+        file_size += len(chunk)
+        if file_size > max_file_size:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File size ({file_size / (1024*1024):.1f} MB) exceeds maximum allowed size ({settings.max_file_size_mb} MB)"
+            )
+        hasher.update(chunk)
+    if file_size == 0:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    return hasher.hexdigest()
+
+
+def _doc_category_path_from_payload(payload: Dict[str, Any]) -> List[str]:
+    """
+    Возвращает категории уровня документа из payload чанка:
+    первые doc_category_count уровней полного пути (без иерархии заголовков).
+    """
+    cat_path = payload.get("category_path")
+    if isinstance(cat_path, str):
+        parts = [c.strip() for c in cat_path.split(" / ") if c.strip()]
+    elif isinstance(cat_path, list):
+        parts = [str(c).strip() for c in cat_path if str(c).strip()]
+    else:
+        parts = []
+    doc_cat_count = payload.get("doc_category_count")
+    if isinstance(doc_cat_count, int) and doc_cat_count >= 0:
+        parts = parts[:doc_cat_count]
+    return parts
+
+
+@router.post("/lookup",
+    summary="Поиск документа по хешу файла",
+    description=load_openapi_md("files_lookup.md"))
+async def lookup_file(
+    collection_name: str = Form(...),
+    file: Optional[UploadFile] = File(None),
+    doc_hash: Optional[str] = Form(None),
+):
+    """
+    Ищет актуальные документы по SHA256-хешу файла (тот же алгоритм, что при загрузке).
+
+    Клиент может передать сам файл (хеш посчитает сервер) или готовый `doc_hash`.
+    Возвращает хеш и список совпадений с категориями уровня документа — их можно
+    передать в `category_path` при загрузке, а при необходимости переместить документ
+    указать выбранную цепочку в `new_category_path`.
+    """
+    if file is None and not doc_hash:
+        raise HTTPException(status_code=400, detail="Either 'file' or 'doc_hash' must be provided")
+    if file is not None:
+        doc_hash = await _compute_upload_hash(file)
+
+    client = get_client()
+    filter_cond = qdrant_models.Filter(
+        must=[
+            qdrant_models.FieldCondition(key="doc_hash", match=qdrant_models.MatchValue(value=doc_hash)),
+            qdrant_models.FieldCondition(key="is_latest", match=qdrant_models.MatchValue(value=True)),
+        ]
+    )
+
+    try:
+        points = await scroll_all_pages(
+            client=client,
+            collection_name=collection_name,
+            scroll_filter=filter_cond,
+            limit=1000,
+            with_payload=True,
+        )
+    except UnexpectedResponse as e:
+        if "Not found: Collection" in str(e):
+            points = []
+        else:
+            raise
+
+    matches = []
+    seen_source_ids = set()
+    for point in points:
+        payload = point.payload or {}
+        source_id = payload.get("source_id")
+        if not source_id or source_id in seen_source_ids:
+            continue
+        seen_source_ids.add(source_id)
+        matches.append({
+            "source_id": source_id,
+            "category_path": _doc_category_path_from_payload(payload),
+            "version": payload.get("version"),
+            "original_filename": payload.get("original_filename"),
+        })
+
+    return create_response(success=True, data={"doc_hash": doc_hash, "matches": matches})
 
 
 @router.post(

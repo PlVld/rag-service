@@ -1,6 +1,6 @@
 import logging
 import time
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 from qdrant_client.http import models as qdrant_models
 from qdrant_client.http.exceptions import UnexpectedResponse
 from app.api.health import get_client
@@ -23,14 +23,17 @@ class QdrantBatchWriter:
 
     def __init__(self):
         self._points_by_collection: Dict[str, List[qdrant_models.PointStruct]] = {}
-        self._mark_not_latest: Dict[str, List[Tuple[str, int]]] = {}  # (source_id, keep_version)
+        self._mark_not_latest: Dict[str, List[Tuple[str, Optional[int]]]] = {}  # (source_id, keep_version)
         self._collections_checked: Set[str] = set()
 
     def add_point(self, collection_name: str, point: qdrant_models.PointStruct):
         self._points_by_collection.setdefault(collection_name, []).append(point)
 
-    def mark_old_versions_not_latest(self, collection_name: str, source_id: str, keep_version: int):
-        """Помечает все версии с данным source_id, кроме keep_version, как is_latest=False."""
+    def mark_old_versions_not_latest(self, collection_name: str, source_id: str, keep_version: Optional[int]):
+        """
+        Помечает все версии с данным source_id, кроме keep_version, как is_latest=False.
+        keep_version=None — пометить все версии (перемещение документа в другую категорию).
+        """
         self._mark_not_latest.setdefault(collection_name, []).append((source_id, keep_version))
 
     @staticmethod
@@ -151,6 +154,15 @@ class QdrantBatchWriter:
                 # Для каждого source_id свой keep_version
                 # Qdrant поддерживает сложные условия, но проще сделать отдельный set_payload для каждого source_id
                 for source_id, keep_version in markers:
+                    must_not = []
+                    # keep_version=None — помечаем все версии (перемещение документа)
+                    if keep_version is not None:
+                        must_not.append(
+                            qdrant_models.FieldCondition(
+                                key="version",
+                                match=qdrant_models.MatchValue(value=keep_version)
+                            )
+                        )
                     filter_cond = qdrant_models.Filter(
                         must=[
                             qdrant_models.FieldCondition(
@@ -162,12 +174,7 @@ class QdrantBatchWriter:
                                 match=qdrant_models.MatchValue(value=True)
                             ),
                         ],
-                        must_not=[
-                            qdrant_models.FieldCondition(
-                                key="version",
-                                match=qdrant_models.MatchValue(value=keep_version)
-                            ),
-                        ]
+                        must_not=must_not
                     )
                     operations.append(
                         qdrant_models.SetPayloadOperation(

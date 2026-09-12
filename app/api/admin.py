@@ -30,8 +30,8 @@ class CategoryChunkCount(BaseModel):
 
 class CategoryHierarchyRequest(BaseModel):
     collection_name: Optional[str] = Field(None, description="Имя коллекции (опционально)")
-    depth: int = Field(0, ge=0, le=10, description="Количество уровней для получения (0 - только список коллекций без категорий, 1-10 - иерархия категорий). Максимальное значение: 10.")
-    categories: Optional[List[str]] = Field(None, description="Массив полных путей категорий (опционально). Если указаны, возвращаются только коллекции с этими категориями.")
+    depth: int = Field(0, ge=0, le=10, description="Количество уровней для получения (0 - только список коллекций без категорий, 1-10 - иерархия категорий). Максимальное значение: 10."),
+    categories: Optional[List[str]] = Field(None, description="Массив полных путей категорий (опционально). Разделитель уровней - \" / \", также принимается \"/\" без пробелов. Если указаны, возвращаются только коллекции с этими категориями.")
 
 
 class CollectionCategoryHierarchy(BaseModel):
@@ -135,6 +135,18 @@ def _get_category_level(category_path: str) -> int:
     return category_path.count(" / ")
 
 
+def _normalize_category_path(category_path: str) -> str:
+    """Приводит путь категории к каноническому виду с разделителем " / ".
+
+    В БД разделитель всегда " / ", но пользователь может передать "/" без пробелов
+    ("A/B/C"). Без нормализации full-text фильтр по такому пути не находит ни одного
+    чанка, и эндпоинт молча возвращает пустой результат.
+    """
+    if " / " in category_path:
+        return category_path.strip()
+    return " / ".join(part.strip() for part in category_path.split("/") if part.strip())
+
+
 def _build_parent_conditions(categories: Optional[List[str]], current_level: int) -> List[qdrant_models.FieldCondition]:
     """
     Строит список условий для родительских категорий (prefix match по category_path).
@@ -209,8 +221,9 @@ async def _get_category_hierarchy_data(
                 ]
             }
 
-        # Если указаны categories, логируем их для отладки
+        # Если указаны categories, нормализуем разделители и логируем для отладки
         if categories:
+            categories = [_normalize_category_path(c) for c in categories]
             logger.info(f"Getting category hierarchy for {len(categories)} categories: {categories}")
 
         collections_result = []
