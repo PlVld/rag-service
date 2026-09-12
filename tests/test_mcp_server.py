@@ -9,9 +9,7 @@ from app.mcp_server import (
     _get_category_hierarchy_internal,
 )
 
-from app.main import (
-    search_categories_tool,
-)
+from app.mcp.tools import search_categories_tool
 
 
 class TestSearchDocumentsInput:
