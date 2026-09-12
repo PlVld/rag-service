@@ -144,7 +144,6 @@ def _load_model(offline: bool = True) -> SentenceTransformer:
         os.environ["HF_HOME"] = CACHE_DIR
         
         model_kwargs = {
-            "trust_remote_code": True,
             "local_files_only": offline,  # Важно для офлайн-режима
             "revision": None,
         }

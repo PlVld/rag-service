@@ -22,7 +22,7 @@ from app.chunking import ChunkerFactory
 from app.core.config import settings
 from app.models.common import DocumentsUploadRequest
 from app.text_cleaning.pipeline import TextCleanerPipeline
-from app.text_cleaning.heading_splitter import parse_heading_sections, build_full_category_path
+from app.text_cleaning.heading_splitter import parse_heading_sections, build_full_category_path, HeadingSection
 from app.text_cleaning.normalizer import normalize_for_embedding
 from app.utils import generate_uuid_from_parts, compute_doc_hash, apply_category_levels
 from app.repository.qdrant_repository import QdrantBatchWriter
@@ -192,21 +192,8 @@ async def process_documents(
 
         # Разбиваем Markdown на секции по заголовкам (до нормализации)
         # Для кода не разбиваем по заголовкам
-        if source_format == 'code':
-            heading_sections = [type('Section', (), {
-                'heading_hierarchy': [],
-                'text': markdown_text,
-                'level': 0,
-            })()]
-        else:
-            heading_sections = parse_heading_sections(markdown_text)
-
-        if not heading_sections:
-            heading_sections = [type('Section', (), {
-                'heading_hierarchy': [],
-                'text': markdown_text,
-                'level': 0,
-            })()]
+        if source_format == 'code' or not (heading_sections := parse_heading_sections(markdown_text)):
+            heading_sections = [HeadingSection(heading_hierarchy=[], text=markdown_text, level=0)]
 
         logger.debug(
             f"Document {source_id}: split into {len(heading_sections)} heading sections, "

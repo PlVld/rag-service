@@ -131,7 +131,6 @@ class LangChainChunker(BaseChunker):
         # Категории (category_path / categories) добавляются в нормализованный текст через
         # normalize_for_embedding() в documents_upload.py — не дублируем здесь,
         # иначе они появятся дважды: в raw_text и в normalized_text.
-        pass  # category_prefix оставлен в metadata для raw_text/поиска
 
         # Объединение мелких чанков (кроме кода)
         if content_type in ('text', 'markdown') and self.min_chunk_size > 0:

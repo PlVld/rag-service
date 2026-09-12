@@ -60,7 +60,7 @@ def basic_normalize(text: str) -> str:
 
 def create_response(
     success: bool,
-    data: Optional[Dict[str, Any]] = None,
+    data: Optional[Union[Dict[str, Any], List[Any]]] = None,
     error_code: Optional[str] = None,
     error_message: Optional[str] = None,
     version: str = "1.0.0"
@@ -99,7 +99,7 @@ def create_file_upload_response(
     is_latest: bool = True,
     content_hash: Optional[str] = None,
     uploaded_chunks: int = 0,
-    chunk_ids: list = None,
+    chunk_ids: Optional[List[str]] = None,
     original_filename: Optional[str] = None,
     collection_name: Optional[str] = None,
     error_code: Optional[str] = None,
