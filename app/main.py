@@ -149,6 +149,17 @@ async def lifespan(_app: FastAPI):
             diag_logger.error(f"Failed to initialize embedding model: {e}")
             raise
 
+    # Проверяем доступность сервера описания изображений (OpenAI-совместимый API).
+    # Если сервер недоступен, сервис продолжает работу — картинки пойдут без описаний.
+    try:
+        from app.text_cleaning.docling_cache import probe_image_description_api
+        if await asyncio.to_thread(probe_image_description_api):
+            diag_logger.info(
+                f"Image description enabled, model: {settings.docling_image_description_model}"
+            )
+    except Exception as e:
+        diag_logger.warning(f"Image description API probe failed: {e}")
+
     diag_logger.info("MCP tools are ready via custom proxy.")
     yield
     # Shutdown

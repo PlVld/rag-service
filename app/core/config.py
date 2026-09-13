@@ -96,6 +96,20 @@ class Settings(BaseSettings):
     docling_ocr_engine: str = Field(default="tesseract", validation_alias="DOCLING_OCR_ENGINE")
     docling_do_ocr: bool = Field(default=True, validation_alias="DOCLING_DO_OCR")
     docling_image_description_model: str = Field(default="", validation_alias="DOCLING_IMAGE_DESCRIPTION_MODEL")
+    # OpenAI-совместимый сервер (vLLM, llama.cpp, LM Studio, Ollama), описывающий картинки из PDF
+    docling_image_description_host: str = Field(default="http://localhost", validation_alias="DOCLING_IMAGE_DESCRIPTION_HOST")
+    docling_image_description_port: int = Field(default=8000, validation_alias="DOCLING_IMAGE_DESCRIPTION_PORT", ge=1, le=65535)
+    docling_image_description_api_key: str = Field(default="", validation_alias="DOCLING_IMAGE_DESCRIPTION_API_KEY")
+    docling_image_description_prompt: str = Field(
+        default="Опиши подробно содержимое изображения на русском языке.",
+        validation_alias="DOCLING_IMAGE_DESCRIPTION_PROMPT",
+    )
+    docling_image_description_timeout: float = Field(default=60.0, validation_alias="DOCLING_IMAGE_DESCRIPTION_TIMEOUT", gt=0)
+    # Доп. параметры запроса к API (JSON), попадают в тело /chat/completions как есть.
+    # Пример отключения размышлений Qwen: {"chat_template_kwargs": {"enable_thinking": false}}
+    docling_image_description_extra_params: str = Field(
+        default="", validation_alias="DOCLING_IMAGE_DESCRIPTION_EXTRA_PARAMS"
+    )
     docling_images_scale: float = Field(default=1.0, validation_alias="DOCLING_IMAGES_SCALE", gt=0, le=4.0)
     docling_extract_images: bool = Field(default=True, validation_alias="DOCLING_EXTRACT_IMAGES")
     # Рендеринг изображений из PDF заметно нагружает CPU и память, поэтому выключен по умолчанию
