@@ -48,9 +48,9 @@ services:
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:${SERVICE_PORT:-8000}/health')"]
       interval: 30s
-      timeout: 10s
+      timeout: 30s
       retries: 3
-      start_period: 60s
+      start_period: 180s
 
 networks:
   dds_network:
