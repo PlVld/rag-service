@@ -132,17 +132,25 @@ async def extract_text_from_file(
     file_path: str,
     source_id: Optional[str] = None,
     doc_hash: Optional[str] = None,
-) -> str:
+    fallback_source_format: str = "text",
+) -> Tuple[str, str]:
     """
     Асинхронно извлекает текст из файла в зависимости от его формата.
+
+    Возвращает кортеж (текст, фактический формат текста). Фактический формат
+    нужен, чтобы downstream не конвертировал уже сконвертированный текст
+    (например, Markdown от Docling не должен повторно проходить через html2text).
 
     Args:
         file_path (str): Путь к файлу для чтения.
         source_id (Optional[str]): Идентификатор источника — часть пути к картинкам.
         doc_hash (Optional[str]): Хеш содержимого документа — часть пути к картинкам.
+        fallback_source_format (str): Формат клиента для ветки, где содержимое
+            файла возвращается как есть (без конвертации).
 
     Returns:
-        str: Содержимое файла в виде строки.
+        Tuple[str, str]: Текстовое содержимое и его фактический формат
+            ('markdown' — если extractor уже выдал Markdown, иначе формат клиента).
 
     Raises:
         IOError: Если файл не может быть прочитан.
@@ -168,7 +176,7 @@ async def extract_text_from_file(
                     if media_dir is not None:
                         text_content = rewrite_image_links(text_content, source_id, doc_hash)
                     logger.info(f"Docling conversion successful, length: {len(text_content)} characters")
-                    return text_content
+                    return text_content, "markdown"
                 else:
                     logger.warning("Docling produced empty content, falling back to legacy extractors")
             except Exception as docling_e:
@@ -185,7 +193,7 @@ async def extract_text_from_file(
                 cleaner = PDFCleaner()
                 text_content = cleaner.clean(pdf_bytes)
                 logger.info(f"Successfully extracted text from PDF, length: {len(text_content)} characters")
-                return text_content
+                return text_content, "markdown"
         elif file_ext in ['.docx', '.doc']:
             # Для DOCX и DOC файлов используем DOCXCleaner
             logger.info(f"Processing DOC/DOCX file: {file_path}")
@@ -193,13 +201,14 @@ async def extract_text_from_file(
             cleaner = DOCXCleaner()
             text_content = cleaner.clean(file_path)
             logger.info(f"Successfully extracted text from DOC/DOCX, length: {len(text_content)} characters")
-            return text_content
+            return text_content, "markdown"
         else:
-            # Для других форматов читаем как текст
+            # Для других форматов читаем как текст — содержимое не конвертируется,
+            # поэтому фактический формат остаётся тем, что передал клиент
             async with aiofiles.open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                 content = await f.read()
                 logger.info(f"Successfully extracted text, length: {len(content)} characters")
-                return content
+                return content, fallback_source_format
 
     except Exception as e:
         logger.error(f"Failed to read file {file_path}: {str(e)}")
@@ -519,16 +528,19 @@ async def _update_point_payload(
             del new_payload[k]
             logger.debug(f"Removed category field: {k}")
 
-    # Добавляем общие поля (не категорийные)
+    # Добавляем общие поля (не категорийные).
+    # source_format/content_type описывают, как текст реально обработан, — точки уже
+    # чанкованы с этим форматом, поэтому клиентский формат их не перезаписывает.
+    # original_format — формат исходного файла по данным клиента.
     new_payload.update({
         "file_path": file_path or point.payload.get("file_path"),
         "is_latest": True,
-        "source_format": source_format,
         "original_format": source_format,
         "original_filename": original_filename,
-        "content_type": source_format,
         "doc_hash": doc_hash,
     })
+    new_payload.setdefault("source_format", source_format)
+    new_payload.setdefault("content_type", source_format)
 
     # Обработка категорий (только если передан непустой список)
     if category_list:
@@ -561,6 +573,7 @@ async def _create_document(
     batch_writer: QdrantBatchWriter,
     mark_old: bool = False,
     prev_source_ids: Optional[List[str]] = None,
+    original_format: Optional[str] = None,
 ) -> Tuple[List[str], List[str], List[Dict]]:
     """
     Создаёт документ (первую версию или новую) через process_documents.
@@ -570,7 +583,8 @@ async def _create_document(
         text_content (str): Текстовое содержимое документа.
         source_id (str): Идентификатор источника.
         version (int): Версия документа.
-        source_format (str): Формат источника.
+        source_format (str): Фактический формат text_content (например, 'markdown'
+            после Docling) — по нему process_documents решает, нужна ли конвертация.
         file (UploadFile): Загруженный файл.
         file_path (Optional[str]): Путь к файлу.
         temp_path (str): Временный путь к файлу.
@@ -581,6 +595,8 @@ async def _create_document(
         mark_old (bool): Пометить старые версии как неактуальные.
         prev_source_ids (Optional[List[str]]): Цепочка source_id предыдущих положений
             документа (заполняется при перемещении между категориями).
+        original_format (Optional[str]): Формат исходного файла по данным клиента
+            (например, 'html'); по умолчанию совпадает с source_format.
 
     Returns:
         Tuple[List[str], List[str]]: Кортеж из списков обновленных source_id и идентификаторов точек.
@@ -591,10 +607,13 @@ async def _create_document(
         logger.debug(f"Marking old versions as not latest for source_id={source_id}, keeping version {version}")
         batch_writer.mark_old_versions_not_latest(collection_name, source_id, keep_version=version)
 
+    if original_format is None:
+        original_format = source_format
+
     doc_metadata = {
         "source_id": source_id,
         "source_format": source_format,
-        "original_format": source_format,
+        "original_format": original_format,
         "version": version,
         "is_latest": True,
         "original_filename": file.filename,
@@ -694,7 +713,9 @@ async def _move_document_to_category(
         }
 
     # Сначала извлекаем текст, только потом помечаем старые документы неактуальными
-    text_content = await extract_text_from_file(temp_path, new_source_id, doc_hash)
+    text_content, actual_format = await extract_text_from_file(
+        temp_path, new_source_id, doc_hash, fallback_source_format=source_format
+    )
     if not text_content:
         return {
             "status": "file is null, skipped",
@@ -717,9 +738,10 @@ async def _move_document_to_category(
 
     # Полная переобработка под новый source_id (векторы зависят от категории)
     _, point_ids, _ = await _create_document(
-        text_content, new_source_id, new_version, source_format,
+        text_content, new_source_id, new_version, actual_format,
         file, file_path, temp_path, new_category_list, doc_hash,
-        collection_name, batch_writer, mark_old=False, prev_source_ids=prev_source_ids
+        collection_name, batch_writer, mark_old=False, prev_source_ids=prev_source_ids,
+        original_format=source_format
     )
     cleanup_other_versions(new_source_id, doc_hash)
     logger.info(
@@ -859,7 +881,9 @@ async def process_single_file(
                 return result
 
         # Сценарий B и C
-        text_content = await extract_text_from_file(temp_path, effective_source_id, doc_hash)
+        text_content, actual_format = await extract_text_from_file(
+            temp_path, effective_source_id, doc_hash, fallback_source_format=source_format
+        )
         if not text_content:
             result.update({
                 "status": "file is null, skipped",
@@ -910,9 +934,10 @@ async def process_single_file(
                 start_create_time = time.time()
                 # Убрано логирование начала создания новой версии - оставлено только время выполнения
                 updated_source_ids, point_ids, skipped_docs = await _create_document(
-                    text_content, effective_source_id, new_version, source_format,
+                    text_content, effective_source_id, new_version, actual_format,
                     file, file_path, temp_path, category_list, doc_hash,
-                    collection_name, batch_writer, mark_old=True
+                    collection_name, batch_writer, mark_old=True,
+                    original_format=source_format
                 )
                 create_elapsed = time.time() - start_create_time
                 logger.info(f"Document version {new_version} with {len(point_ids)} chunks created in {create_elapsed:.3f}s")
@@ -934,9 +959,10 @@ async def process_single_file(
             start_create_time = time.time()
             # Убрано логирование начала создания первой версии - оставлено только время выполнения
             updated_source_ids, point_ids, skipped_docs = await _create_document(
-                text_content, effective_source_id, new_version, source_format,
+                text_content, effective_source_id, new_version, actual_format,
                 file, file_path, temp_path, category_list, doc_hash,
-                collection_name, batch_writer, mark_old=False
+                collection_name, batch_writer, mark_old=False,
+                original_format=source_format
             )
             create_elapsed = time.time() - start_create_time
             logger.info(f"Document version {new_version} with {len(point_ids)} chunks created in {create_elapsed:.3f}s")

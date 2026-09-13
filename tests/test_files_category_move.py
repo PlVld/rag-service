@@ -120,7 +120,7 @@ async def test_move_same_hash_reprocesses():
 
     with patch("app.api.files.get_client", return_value=client), \
          patch("app.api.files.extract_text_from_file",
-               new_callable=AsyncMock, return_value="текст"), \
+               new_callable=AsyncMock, return_value=("текст", "text")), \
          patch("app.api.files.process_documents", side_effect=fake_process_documents) as pd_mock:
         batch_writer = QdrantBatchWriter()
         result = await files_module.process_single_file(
@@ -173,7 +173,7 @@ async def test_move_marks_target_versions_not_latest():
 
     with patch("app.api.files.get_client", return_value=client), \
          patch("app.api.files.extract_text_from_file",
-               new_callable=AsyncMock, return_value="новый текст"), \
+               new_callable=AsyncMock, return_value=("новый текст", "text")), \
          patch("app.api.files.process_documents", side_effect=fake_process_documents) as pd_mock:
         batch_writer = QdrantBatchWriter()
         result = await files_module.process_single_file(
@@ -218,7 +218,7 @@ async def test_move_changed_hash_reprocesses():
 
     with patch("app.api.files.get_client", return_value=client), \
          patch("app.api.files.extract_text_from_file",
-               new_callable=AsyncMock, return_value="новый текст"), \
+               new_callable=AsyncMock, return_value=("новый текст", "text")), \
          patch("app.api.files.process_documents", side_effect=fake_process_documents) as pd_mock:
         batch_writer = QdrantBatchWriter()
         result = await files_module.process_single_file(
@@ -295,7 +295,7 @@ async def test_new_category_without_existing_doc_creates_new():
 
     with patch("app.api.files.get_client", return_value=FakeQdrantClient([])), \
          patch("app.api.files.extract_text_from_file",
-               new_callable=AsyncMock, return_value="текст"), \
+               new_callable=AsyncMock, return_value=("текст", "text")), \
          patch("app.api.files.process_documents", side_effect=fake_process_documents) as pd_mock:
         batch_writer = QdrantBatchWriter()
         result = await files_module.process_single_file(
@@ -314,6 +314,41 @@ async def test_new_category_without_existing_doc_creates_new():
     doc = pd_mock.call_args[0][0].documents[0]
     assert doc.payload["source_id"] == new_sid
     assert doc.category_path == ["Новая"]
+
+
+async def test_extracted_markdown_not_reconverted():
+    """Баг-регресс: Markdown, полученный от extractor (Docling), не должен повторно
+    конвертироваться по клиентскому source_format='html'. Двойная конвертация
+    через html2text схлопывала переводы строк, весь документ превращался в одну
+    строку-заголовок, и category_level2 получал весь текст файла вместо заголовка."""
+    content = b"html content"
+    new_sid = generate_uuid_from_parts(["Категория", "doc.txt"])
+
+    async def fake_process_documents(request, batch_writer):
+        doc = request.documents[0]
+        return [doc.payload["source_id"]], ["pid-1"], []
+
+    with patch("app.api.files.get_client", return_value=FakeQdrantClient([])), \
+         patch("app.api.files.extract_text_from_file",
+               new_callable=AsyncMock,
+               return_value=("# Заголовок\n\nТекст секции", "markdown")), \
+         patch("app.api.files.process_documents", side_effect=fake_process_documents) as pd_mock:
+        batch_writer = QdrantBatchWriter()
+        result = await files_module.process_single_file(
+            file=make_upload("doc.txt", content),
+            collection_name=COLLECTION,
+            source_format="html",
+            batch_writer=batch_writer,
+            category_path='["Категория"]',
+        )
+
+    assert result["status"] == "created"
+    doc = pd_mock.call_args[0][0].documents[0]
+    # Фактический формат текста — markdown (конвертация не нужна),
+    # формат исходного файла клиента сохранён в original_format
+    assert doc.payload["source_format"] == "markdown"
+    assert doc.payload["original_format"] == "html"
+    assert doc.text == "# Заголовок\n\nТекст секции"
 
 
 async def test_same_category_new_category_ignored():
