@@ -72,7 +72,9 @@ Universal Document Vector Search Service — это микросервис дл�
 /v1/documents/search     — POST: Поиск документов
 /v1/categories/          — GET: Получение категорий
 /v1/categories/search    — POST: Поиск категорий
-/api/files/upload        — POST: Загрузка файлов
+/api/files/upload        — POST: Загрузка файлов (source_id вычисляется сервером)
+/api/files/lookup        — POST: Поиск категорий по SHA256 хешу файла
+/api/files/preview/md    — POST: Превью конвертации в Markdown без записи в Qdrant
 /api/admin/*             — POST: Админ-операции
 /health                  — GET: Health check
 /mcp                     — POST: MCP endpoints
@@ -128,6 +130,20 @@ Raw Text → Format Detection → Cleaner → Normalizer → Markdown → Chunki
 # Включает OCR для сканированных документов
 ```
 
+#### Описания изображений через VLM:
+
+Картинки из документов описываются внешней VLM-моделью через OpenAI-совместимый
+API (LM Studio, vLLM, llama.cpp, Ollama), описания попадают в Markdown рядом со
+ссылкой на картинку и индексируются:
+
+- PDF и одиночные изображения — штатная стадия Docling `do_picture_description`
+- DOCX, HTML — пост-обработка после конвертации (у SimplePipeline-форматов
+  этой стадии в Docling нет), для HTML дополнительно включается `fetch_images`
+- Доступность сервера проверяется при старте; при недоступности сервис
+  работает дальше, картинки конвертируются без описаний
+- Настройки: `DOCLING_IMAGE_DESCRIPTION_MODEL` (пустая — выключено), `_HOST`,
+  `_PORT`, `_API_KEY`, `_PROMPT`, `_TIMEOUT`, `_EXTRA_PARAMS`
+
 ### 4. Chunking (`app/chunking.py`)
 
 Разбиение текста на чанки для векторизации.
@@ -157,9 +173,10 @@ class QdrantBatchWriter:
     # Transaction management
 ```
 
-### 6. MCP Server (`app/mcp_server.py`)
+### 6. MCP (`app/mcp/`)
 
-Model Context Protocol интеграция.
+Model Context Protocol интеграция: `proxy.py` (JSON-RPC прокси), `tools.py`
+(реестр инструментов `TOOLS`), `middlewares.py` (аутентификация и логирование).
 
 #### Инструменты:
 
@@ -376,6 +393,14 @@ ENABLE_WEIGHTED_RRF=true
 # Docling
 USE_DOCLING=true
 DOCLING_OCR_ENGINE=tesseract
+
+# Описания изображений (пустая модель = выключено)
+DOCLING_IMAGE_DESCRIPTION_MODEL=
+DOCLING_IMAGE_DESCRIPTION_HOST=http://localhost
+DOCLING_IMAGE_DESCRIPTION_PORT=8000
+DOCLING_IMAGE_DESCRIPTION_API_KEY=
+DOCLING_IMAGE_DESCRIPTION_PROMPT=Опиши подробно содержимое изображения на русском языке.
+DOCLING_IMAGE_DESCRIPTION_TIMEOUT=60
 ```
 
 ## Масштабируемость
@@ -493,11 +518,13 @@ services:
 
 ```
 tests/
-├── conftest.py                    # Fixtures
-├── test_rest_api_documents.py     # Тесты документов
-├── test_rest_api_categories.py    # Тесты категорий
-├── test_rest_api_integration.py   # Integration tests
-└── test_mcp_server.py             # Тесты MCP
+├── conftest.py                     # Fixtures
+├── test_rest_api_documents.py      # Тесты документов
+├── test_rest_api_categories.py     # Тесты категорий
+├── test_rest_api_integration.py    # Integration tests
+├── test_files_category_move.py     # Перемещение между категориями, /v1/files
+├── test_file_formats.py            # Конвертация форматов (Docling, превью)
+└── test_mcp_server.py              # Тесты MCP
 ```
 
 ### Запуск

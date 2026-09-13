@@ -213,6 +213,9 @@ docker-compose -f docker-compose.yml -f Dockerfile.cpu up -d
 |-------|------|----------|
 | POST | `/api/files/upload` | Загрузка одного файла |
 | POST | `/api/files/upload/batch` | Пакетная загрузка файлов |
+| POST | `/api/files/lookup` | Поиск категорий по SHA256 хешу файла |
+| POST | `/api/files/preview/md` | Превью конвертации в Markdown (без записи в Qdrant) |
+| POST | `/api/files/preview/md/text` | То же, ответ как `text/markdown` |
 
 #### Администрирование
 
@@ -286,8 +289,24 @@ Authorization: Bearer <RAG_SERVICE_API_KEY>
 | `SEMANTIC_WEIGHT` | `0.3` | Вес семантического поиска |
 | `CATEGORY_WEIGHT` | `0.7` | Вес категориального поиска |
 | `ALLOWED_MCP_TOOLS` | — | Список разрешённых MCP инструментов |
+| `DOCLING_IMAGE_DESCRIPTION_MODEL` | — | Модель описания изображений (пустая = выключено) |
 
 Полный список переменных: [.env.example](.env.example)
+
+### Описания изображений через VLM
+
+Картинки из документов (PDF, DOCX, HTML, отдельные изображения) описываются
+OpenAI-совместимым сервером (LM Studio, vLLM, llama.cpp, Ollama), описания
+попадают в чанки и участвуют в поиске. Достаточно указать модель и адрес сервера:
+
+```env
+DOCLING_IMAGE_DESCRIPTION_MODEL=qwen/qwen2.5-vl-7b-instruct
+DOCLING_IMAGE_DESCRIPTION_HOST=http://127.0.0.1
+DOCLING_IMAGE_DESCRIPTION_PORT=1234
+```
+
+Сервер проверяется при старте: если недоступен — сервис продолжает работу,
+картинки конвертируются без описаний.
 
 ## 🐳 Развёртывание
 
@@ -343,7 +362,7 @@ rag/
 │   │   ├── markdown_cleaner.py   # Markdown специфичный
 │   │   └── ...
 │   ├── main.py                   # Точка входа (FastAPI app)
-│   └── mcp_server.py             # MCP сервер
+│   └── mcp/                      # MCP: proxy, tools, middlewares
 ├── tests/                        # Тесты
 ├── docs/                         # Документация
 │   ├── api/                      # Документация по API

@@ -21,12 +21,69 @@
     чтобы ссылку мог открыть рендерер Markdown; листинга каталогов нет)
   - Ссылки на картинки не разрываются при чанкинге и не попадают в текст для эмбеддинга
 
-- **Новые переменные окружения**
-  - `DOCLING_EXTRACT_IMAGES` — сохранять изображения из документов
-  - `DOCLING_EXTRACT_PDF_IMAGES` — извлекать изображения из PDF (требует рендеринга страниц)
-  - `MEDIA_DIR` — каталог для извлечённых изображений
-  - `MEDIA_URL_PREFIX` — префикс URL для раздачи изображений
-  - `MEDIA_BASE_URL` — базовый URL для абсолютных ссылок
+- **Описания изображений через OpenAI-совместимый API**
+  - Картинки из документов (PDF, DOCX, HTML, отдельные изображения) описываются
+    VLM-моделью на внешнем сервере (vLLM, llama.cpp server, LM Studio, Ollama),
+    описания попадают в `raw_text` рядом со ссылкой на картинку и индексируются
+  - PDF и одиночные изображения описываются штатной стадией Docling
+    (`do_picture_description`), DOCX/HTML — пост-обработкой
+    (у SimplePipeline-форматов этой стадии в Docling нет)
+  - Доступность сервера проверяется при старте сервиса; если сервер недоступен —
+    сервис работает дальше, картинки конвертируются без описаний
+  - Для HTML включается `fetch_images`, чтобы вместо плейсхолдеров появлялся растр
+  - Переменные окружения: `DOCLING_IMAGE_DESCRIPTION_MODEL` (пустая — функция
+    выключена), `_HOST`, `_PORT`, `_API_KEY`, `_PROMPT`, `_TIMEOUT`,
+    `_EXTRA_PARAMS` (JSON с доп. параметрами запроса, например
+    `{"chat_template_kwargs": {"enable_thinking": false}}`)
+
+- **Переработка `/v1/files`**
+  - `source_id` всегда вычисляется сервером: `gen(категория_поиска + имя_файла)`
+  - `new_category_path`, отличная от `category_path`, перемещает документ между
+    категориями: старый `source_id` помечается неактуальным, документ полностью
+    переобрабатывается (категория входит в текст эмбеддинга), `prev_source_ids`
+    накапливает цепочку перемещений, версия — сквозная
+  - `POST /v1/files/lookup` — поиск категорий по SHA256 хешу файла
+  - `POST /v1/files/preview/md` и `/preview/md/text` — превью конвертации в
+    Markdown до чанкинга и без записи в Qdrant
+
+- **CI**: pytest + сборка Docker-образа, lock-файлы зависимостей GPU/CPU
+  (`requirements.lock`, `requirements-cpu.lock`), удалён устаревший `openapi.json`
+
+- **MCP вынесен из `main.py`** в `app/mcp/` (proxy, tools, middlewares), явный
+  реестр `TOOLS` вместо discovery через `vars()`, маршруты `/mcp` скрыты
+  из OpenAPI-схемы
+
+### Исправлено
+
+- **Двойная конвертация Markdown от Docling**: `extract_text_from_file` возвращает
+  фактический формат текста, и Markdown не проходит повторно через html2text
+  (двойная конвертация схлопывала переводы строк, весь документ превращался
+  в одну строку-заголовок). В payload разделяются `source_format`
+  (как текст реально обработан) и `original_format` (формат исходного файла
+  по данным клиента)
+- **`category_id_level*`**: общая `apply_category_levels` в utils, перегенерация
+  ID при обновлении категорий, удаление протухших глубоких уровней
+
+### Изменено
+
+- Healthcheck (Dockerfile, Dockerfile.cpu, docker-compose): `timeout` 10s → 30s,
+  `start_period` 60s → 180s — старт с загрузкой моделей эмбеддингов дольше минуты
+- Убраны CPU-пины PyTorch из `requirements.txt` (GPU-сборка теперь возможна),
+  исправлена версия `pymorphy2-dicts-ru`
+
+### Новые переменные окружения
+
+- `DOCLING_EXTRACT_IMAGES` — сохранять изображения из документов
+- `DOCLING_EXTRACT_PDF_IMAGES` — извлекать изображения из PDF (требует рендеринга страниц)
+- `MEDIA_DIR` — каталог для извлечённых изображений
+- `MEDIA_URL_PREFIX` — префикс URL для раздачи изображений
+- `MEDIA_BASE_URL` — базовый URL для абсолютных ссылок
+- `DOCLING_IMAGE_DESCRIPTION_MODEL` — модель описания изображений (пустая = выключено)
+- `DOCLING_IMAGE_DESCRIPTION_HOST` / `_PORT` — адрес OpenAI-совместимого сервера
+- `DOCLING_IMAGE_DESCRIPTION_API_KEY` — API-ключ сервера описаний
+- `DOCLING_IMAGE_DESCRIPTION_PROMPT` — промпт описания
+- `DOCLING_IMAGE_DESCRIPTION_TIMEOUT` — тайм-аут запроса описания (сек)
+- `DOCLING_IMAGE_DESCRIPTION_EXTRA_PARAMS` — JSON с доп. параметрами запроса
 
 ---
 
