@@ -2,7 +2,7 @@ fastapi>=0.135.1
 uvicorn[standard]==0.41.0
 pydantic>=2.12.5
 pydantic-settings>=2.13.1
-qdrant-client[fastembed-gpu]>=1.17.1
+qdrant-client>=1.17.1
 python-dotenv>=1.0.0
 langchain>=0.1.0
 langchain-text-splitters>=1.1.1
@@ -24,7 +24,9 @@ lxml>=4.9.0                  # для быстрого парсинга HTML
 pdf2image>=1.16.0
 pytesseract>=0.3.10
 Pillow>=10.0.0
-sentence_transformers>=5.3.0
+# sentence-transformers не нужен в Docker: эмбеддинги считает отдельный контейнер TEI.
+# Для локального запуска без EMBEDDINGS_API_URL раскомментировать:
+# sentence-transformers>=5.3.0
 transformers>=5.3.0
 einops>=0.8.0
 mcp>=1.27.0
@@ -38,8 +40,10 @@ python-magic-bin>=0.4.14; sys_platform == "win32"  # libmagic для Windows (н
 docling==2.118.0             # для конвертации документов в Markdown с распознаванием изображений
 starlette>=0.41.0            # для middlewares и lifespan events
 
-# PyTorch: версия по умолчанию (GPU или CPU — зависит от платформы).
-# Для CPU-only установки используйте requirements-cpu.txt
+# PyTorch: CPU-only (эмбеддинги в контейнере TEI, GPU в app не нужен).
+# GPU-инференс при необходимости включается в контейнере embeddings
+# (CUDA-тег text-embeddings-inference), образ app не пересобирается.
+--extra-index-url https://download.pytorch.org/whl/cpu
 torch>=2.6.0
 torchvision>=0.21.0
 torchaudio>=2.6.0

@@ -25,14 +25,20 @@ services:
       - "${SERVICE_PORT:-8000}:${SERVICE_PORT:-8000}"
     environment:
       - QDRANT_URL=http://qdrant:6333
+      # Сервис эмбеддингов (text-embeddings-inference) разворачивается отдельно
+      # от проекта — см. docs/DEPLOYMENT.md, раздел «Сервис эмбеддингов».
+      # По умолчанию — контейнер на этом же хосте (порт 8081).
+      - EMBEDDINGS_API_URL=${EMBEDDINGS_API_URL:-http://host.docker.internal:8081}
       - SERVICE_PORT=${SERVICE_PORT:-8000}
       - SERVICE_HOST=0.0.0.0
     env_file:
       - .env
     volumes:
-      - ./model_cache:/app/model_cache  # Volume mount для кэша моделей
       - ./app:/app/app        # Bind mount для быстрой разработки
       - ./uploads:/app/uploads
+    # host.docker.internal на Linux-хосте требует явного маппинга
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - qdrant
     networks:

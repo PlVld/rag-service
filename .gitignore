@@ -63,6 +63,8 @@ dmypy.json
 # ============================================================
 qdrant_data/
 model_cache/
+# Кэш модели эмбеддингов для контейнера text-embeddings-inference
+tei_data/
 docling_cache/
 # Модели Docling, скачиваются через `docling-tools models download -o ./models`
 models/

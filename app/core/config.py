@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     )
     use_gpu: bool = Field(default=True, validation_alias="USE_GPU")
 
+    # Удалённый сервис эмбеддингов (text-embeddings-inference).
+    # Если задан URL, векторы считаются через API, и модель в процессе не загружается.
+    # Если пусто — работает локальный режим sentence-transformers.
+    embeddings_api_url: str = Field(default="", validation_alias="EMBEDDINGS_API_URL")
+    embeddings_api_timeout: float = Field(default=120.0, validation_alias="EMBEDDINGS_API_TIMEOUT", gt=0)
+
     # Logging
     log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
 

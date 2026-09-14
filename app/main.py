@@ -128,26 +128,38 @@ async def lifespan(_app: FastAPI):
     settings.configure_logging()
     diag_logger.info("Starting up RAG service...")
 
-    # Загружаем модель эмбеддингов при старте
-    # Сначала пробуем из кэша, если нет — скачиваем
-    try:
-        from app.core.embeddings import initialize_model
-        model = await asyncio.to_thread(initialize_model, online=False)
-        diag_logger.info(f"Embedding model loaded from cache: {type(model).__name__}")
-    except RuntimeError as e:
-        if "not found in cache" in str(e):
-            diag_logger.warning("Model not in cache. Downloading from Hugging Face...")
-            try:
-                from app.core.embeddings import initialize_model
-                model = await asyncio.to_thread(initialize_model, online=True)
-                diag_logger.info(f"Embedding model downloaded and initialized: {type(model).__name__}")
-            except Exception as download_err:
-                diag_logger.error(f"Failed to download model: {download_err}")
-                diag_logger.error("Set HF_HUB_OFFLINE=0 and restart to download the model.")
-                raise RuntimeError(f"Cannot initialize embedding model. Neither cache nor download available.") from download_err
+    # Загружаем модель эмбеддингов при старте.
+    # В удалённом режиме (EMBEDDINGS_API_URL) проверяем доступность API:
+    # контейнер TEI при первом запуске может качать модель несколько минут,
+    # поэтому не блокируем старт — готовность отслеживает /health/ready.
+    from app.core.embeddings import initialize_model, remote_mode_enabled, check_embedding_ready
+
+    if remote_mode_enabled():
+        if await check_embedding_ready():
+            diag_logger.info("Embeddings API is ready (remote mode)")
         else:
-            diag_logger.error(f"Failed to initialize embedding model: {e}")
-            raise
+            diag_logger.warning(
+                "Embeddings API is not ready yet — service starts anyway; "
+                "readiness will be reported at /health/ready"
+            )
+    else:
+        # Локальный режим: сначала пробуем из кэша, если нет — скачиваем
+        try:
+            model = await asyncio.to_thread(initialize_model, online=False)
+            diag_logger.info(f"Embedding model loaded from cache: {type(model).__name__}")
+        except RuntimeError as e:
+            if "not found in cache" in str(e):
+                diag_logger.warning("Model not in cache. Downloading from Hugging Face...")
+                try:
+                    model = await asyncio.to_thread(initialize_model, online=True)
+                    diag_logger.info(f"Embedding model downloaded and initialized: {type(model).__name__}")
+                except Exception as download_err:
+                    diag_logger.error(f"Failed to download model: {download_err}")
+                    diag_logger.error("Set HF_HUB_OFFLINE=0 and restart to download the model.")
+                    raise RuntimeError(f"Cannot initialize embedding model. Neither cache nor download available.") from download_err
+            else:
+                diag_logger.error(f"Failed to initialize embedding model: {e}")
+                raise
 
     # Проверяем доступность сервера описания изображений (OpenAI-совместимый API).
     # Если сервер недоступен, сервис продолжает работу — картинки пойдут без описаний.
@@ -165,6 +177,8 @@ async def lifespan(_app: FastAPI):
     # Shutdown
     from app.api.health import close_client
     await close_client()
+    from app.core.embeddings import close_http_client
+    await close_http_client()
     diag_logger.info("Qdrant client closed.")
 
 

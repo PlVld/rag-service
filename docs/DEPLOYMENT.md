@@ -65,24 +65,34 @@ cp .env.example .env
 # Минимальная конфигурация
 QDRANT_URL=http://localhost:6333
 RAG_SERVICE_API_KEY=dev-api-key-12345
-EMBEDDING_MODEL=BAAI/bge-m3
-USE_GPU=false
 LOG_LEVEL=DEBUG
 ```
 
-### 3. Запуск Qdrant
+### 3. Запуск инфраструктуры (Qdrant + сервис эмбеддингов)
+
+Модель эмбеддингов разворачивается отдельным контейнером TEI
+(подробности и GPU-вариант — в разделе «Сервис эмбеддингов» ниже):
 
 ```bash
+# Qdrant
 docker run -d --name qdrant-dev \
   -p 6333:6333 \
   -p 6334:6334 \
   -v ./qdrant_data:/qdrant/storage \
   qdrant/qdrant:latest
+
+# Сервис эмбеддингов (bge-m3), порт 8081 наружу
+docker run -d --name tei-bge-m3 --restart unless-stopped \
+  -p 8081:80 \
+  -v ./tei_data:/data \
+  ghcr.io/huggingface/text-embeddings-inference:cpu-latest \
+  --model-id BAAI/bge-m3 \
+  --max-batch-tokens 2048 --tokenization-workers 2
 ```
 
 ### 4. Запуск приложения
 
-**Вариант A: С виртуальным окружением**
+**Вариант A: С виртуальным окружением (рекомендуется)**
 
 ```bash
 # Создание venv
@@ -96,9 +106,23 @@ source venv/bin/activate
 # Установка зависимостей
 pip install -r requirements.txt
 
-# Запуск
+# Запуск: эмбеддинги через контейнер TEI
+EMBEDDINGS_API_URL=http://localhost:8081 \
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
+
+Альтернатива — полностью локальная модель (без TEI, требуется `model_cache/`
+с моделью и `pip install sentence-transformers`; даёт GPU-ускорение,
+если в venv установлен torch с CUDA):
+
+```bash
+# EMBEDDINGS_API_URL не задавать
+EMBEDDING_MODEL=BAAI/bge-m3 \
+USE_GPU=true \
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+Оба варианта дают идентичные векторы — данные Qdrant пересчитывать не нужно.
 
 **Вариант B: Docker (CPU)**
 
@@ -106,6 +130,8 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 docker build -t rag-service:dev-cpu -f Dockerfile.cpu .
 docker run -d --name rag-dev \
   --env-file .env \
+  -e EMBEDDINGS_API_URL=http://host.docker.internal:8081 \
+  --add-host host.docker.internal:host-gateway \
   -p 8000:8000 \
   -v ./uploads:/app/uploads \
   rag-service:dev-cpu
@@ -124,6 +150,49 @@ open http://localhost:8000/docs
 ---
 
 ## Docker Compose
+
+### Сервис эмбеддингов (обязательно перед запуском стека)
+
+Модель эмбеддингов (bge-m3) вынесена из состава проекта и разворачивается
+отдельным контейнером [text-embeddings-inference](https://github.com/huggingface/text-embeddings-inference) (TEI).
+Это позволяет ставить её на выделенную машину (в т.ч. с GPU) независимо от сервиса.
+
+**CPU-вариант (на хосте с сервисом):**
+
+```bash
+docker run -d --name tei-bge-m3 --restart unless-stopped \
+  -p 8081:80 \
+  -v "$(pwd)/tei_data:/data" \
+  ghcr.io/huggingface/text-embeddings-inference:cpu-latest \
+  --model-id BAAI/bge-m3 \
+  --max-batch-tokens 2048 --tokenization-workers 2
+```
+
+> `--max-batch-tokens 2048` важен: по умолчанию TEI резервирует буферы
+> под 16384 токенов, и процесс занимает ~12 ГБ памяти вместо ~2.2 ГБ.
+> 2048 токенов с запасом покрывает батч из 32 чанков сервиса.
+> Для GPU-варианта это дополнительно экономит видеопамять.
+
+**GPU-вариант (машина с NVIDIA GPU, драйвер и nvidia-container-toolkit установлены):**
+
+```bash
+docker run -d --name tei-bge-m3 --restart unless-stopped \
+  --gpus all \
+  -p 8081:80 \
+  -v "$(pwd)/tei_data:/data" \
+  ghcr.io/huggingface/text-embeddings-inference:86-...-cu124 \
+  --model-id BAAI/bge-m3 \
+  --max-batch-tokens 2048 --tokenization-workers 2
+```
+
+При первом запуске модель (~2.2 ГБ) скачивается в volume `./tei_data`.
+Проверка готовности: `curl http://localhost:8081/health`.
+
+Если модель стоит на другой машине, укажите её адрес в `.env`:
+
+```env
+EMBEDDINGS_API_URL=http://<host-с-моделью>:8081
+```
 
 ### Development
 
@@ -147,32 +216,9 @@ docker-compose logs -f app
 
 ### GPU развёртывание
 
-Раскомментируйте секцию `deploy` в `docker-compose.yml`:
-
-```yaml
-services:
-  app:
-    # ...
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-```
-
-Запуск с GPU:
-
-```bash
-docker-compose up -d
-```
-
-Проверка использования GPU:
-
-```bash
-docker exec -it rag-app-1 nvidia-smi
-```
+GPU в контейнере app не используется (эмбеддинги считает TEI, docling — CPU).
+Для ускорения эмбеддингов разверните TEI с GPU — см. раздел
+«Сервис эмбеддингов» выше.
 
 ---
 

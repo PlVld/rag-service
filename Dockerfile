@@ -1,13 +1,5 @@
 # =============================================================================
-# Этап 0: Загрузка модели bge-m3
-# =============================================================================
-FROM python:3.11-slim AS model-downloader
-
-RUN pip install --no-cache-dir sentence-transformers transformers huggingface_hub
-RUN python -c "from sentence_transformers import SentenceTransformer; model = SentenceTransformer('BAAI/bge-m3', local_files_only=False)"
-
-# =============================================================================
-# Этап 1: Сборщик зависимостей
+# Этап 0: Сборщик зависимостей
 # =============================================================================
 FROM python:3.11-slim AS builder
 
@@ -48,31 +40,33 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr-rus \
     && rm -rf /var/lib/apt/lists/*
 
+# ---------------------------------------------------------------------------
+# Непривилегированный пользователь (до COPY --chown)
+# ---------------------------------------------------------------------------
+RUN groupadd -r appuser && useradd -r -g appuser -d /app -s /sbin/nologin appuser
+
 # Копирование установленных пакетов из builder
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
-# Копирование модели bge-m3 из model-downloader
-RUN mkdir -p /app/model_cache
-COPY --from=model-downloader /root/.cache/huggingface/hub /app/model_cache/hub
-
 # Модели Docling. Путь /app/models ищет app/text_cleaning/bundled_tools.py
-COPY --from=docling-models /docling_models /app/models
+COPY --from=docling-models --chown=appuser:appuser /docling_models /app/models
 
 WORKDIR /app
 
-# Переменные окружения для кэша моделей.
-# Модель mount'ится из ./model_cache через docker-compose (volume mount)
-ENV HF_HOME=/app/model_cache
-ENV TRANSFORMERS_CACHE=/app/model_cache
-ENV SENTENCE_TRANSFORMERS_HOME=/app/model_cache
+# Эмбеддинги считаются в отдельном контейнере (text-embeddings-inference),
+# поэтому модель bge-m3 в образ не встраивается (EMBEDDINGS_API_URL в compose).
+# HF_HUB_OFFLINE=1 — docling-модели загружаются из /app/models, сети не нужно.
 ENV HF_HUB_OFFLINE=1
 
 # Переменная окружения для poppler (Linux)
 ENV POPPLER_PATH=/usr/bin
 
 # Копирование исходного кода
-COPY ./app /app/app
+COPY --chown=appuser:appuser ./app /app/app
+
+# Каталог для загружаемых файлов (volume mount из docker-compose)
+RUN mkdir -p /app/uploads && chown -R appuser:appuser /app/uploads
 
 # Порт сервиса (можно переопределить через docker-compose или .env)
 ENV SERVICE_PORT=8000
@@ -81,11 +75,6 @@ ENV SERVICE_HOST=0.0.0.0
 # Открытие порта
 EXPOSE 8000
 
-# ---------------------------------------------------------------------------
-# Непривилегированный пользователь
-# ---------------------------------------------------------------------------
-RUN groupadd -r appuser && useradd -r -g appuser -d /app -s /sbin/nologin appuser
-RUN chown -R appuser:appuser /app
 USER appuser
 
 # ---------------------------------------------------------------------------

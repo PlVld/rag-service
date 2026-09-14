@@ -14,17 +14,13 @@ async def _check_embedding_model_ready() -> bool:
     """
     Проверяет, что модель эмбеддингов загружена и готова к работе.
 
-    Пытается получить закэшированную модель через get_embedding_model().
+    Поддерживает удалённый режим (EMBEDDINGS_API_URL) и локальный.
     Возвращает True, если модель доступна, иначе False.
-
-    Returns:
-        bool: True если модель загружена, False в противном случае.
     """
-    from app.core.embeddings import get_embedding_model
+    from app.core.embeddings import check_embedding_ready
 
     try:
-        get_embedding_model()
-        return True
+        return await check_embedding_ready()
     except Exception:
         return False
 

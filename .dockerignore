@@ -34,8 +34,11 @@ Thumbs.db
 uploads/
 qdrant_data/
 
-# Кэш моделей (подключается через volume mount, не включается в образ)
+# Кэш моделей (теперь живёт в контейнере text-embeddings-inference)
 model_cache/
+
+# Данные TEI (кэш модели эмбеддингов для docker-compose)
+tei_data/
 
 # Модели Docling: в образ попадают из стадии docling-models, а не из контекста сборки
 models/
