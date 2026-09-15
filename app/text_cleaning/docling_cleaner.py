@@ -140,6 +140,10 @@ class DoclingCleaner(BaseCleaner):
         """
         if not self.image_description_model or not self.image_description_url:
             self._image_description_available = False
+            logger.warning(
+                f"Image description disabled: model={self.image_description_model!r}, "
+                f"url={self.image_description_url!r}"
+            )
             return False
 
         base_url = self.image_description_url

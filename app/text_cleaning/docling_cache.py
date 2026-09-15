@@ -24,6 +24,8 @@ def _create_cleaner() -> "BaseCleaner":
     from app.text_cleaning.docling_cleaner import DoclingCleaner
 
     image_description_host = settings.docling_image_description_host.rstrip("/")
+    if not image_description_host.startswith(("http://", "https://")):
+        image_description_host = "http://" + image_description_host
     image_description_url = (
         f"{image_description_host}:{settings.docling_image_description_port}"
         "/v1/chat/completions"
@@ -47,6 +49,13 @@ def _create_cleaner() -> "BaseCleaner":
                 f"Invalid JSON in DOCLING_IMAGE_DESCRIPTION_EXTRA_PARAMS, ignored: {err}"
             )
 
+    logger.info(
+        "Creating DoclingCleaner: model=%r host=%s port=%d url=%s",
+        settings.docling_image_description_model,
+        settings.docling_image_description_host,
+        settings.docling_image_description_port,
+        image_description_url,
+    )
     cleaner = DoclingCleaner(
         do_ocr=settings.docling_do_ocr,
         ocr_engine=settings.docling_ocr_engine,

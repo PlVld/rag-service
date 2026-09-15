@@ -165,9 +165,17 @@ async def lifespan(_app: FastAPI):
     # Если сервер недоступен, сервис продолжает работу — картинки пойдут без описаний.
     try:
         from app.text_cleaning.docling_cache import probe_image_description_api
-        if await asyncio.to_thread(probe_image_description_api):
+        probe_ok = await asyncio.to_thread(probe_image_description_api)
+        if probe_ok:
             diag_logger.info(
                 f"Image description enabled, model: {settings.docling_image_description_model}"
+            )
+        else:
+            diag_logger.warning(
+                "Image description API probe returned False — "
+                "images will be converted without descriptions. "
+                "Check DOCLING_IMAGE_DESCRIPTION_MODEL, DOCLING_IMAGE_DESCRIPTION_HOST, "
+                "and network connectivity."
             )
     except Exception as e:
         diag_logger.warning(f"Image description API probe failed: {e}")

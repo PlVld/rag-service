@@ -151,6 +151,20 @@ open http://localhost:8000/docs
 
 ## Docker Compose
 
+### Структура хранения
+
+Код приложения и данные хранятся в volume-маппингах, которые переживают rebuild:
+
+| Путь в контейнере | Хост | Содержимое |
+|---|---|---|
+| `/app/app` | `./app` | Код приложения (hot-reload) |
+| `/app/uploads` | `./uploads` | Извлечённые изображения, медиа |
+| `/qdrant/storage` | `./qdrant_data` | База Qdrant |
+
+> ⚠️ На Windows bind mount работает только с путями внутри репозитория.
+> Файлы `uploads/media/_preview/{source_id}/{hash}/images/*.png` хранятся в `./uploads/media/`.
+> Контейнер запускается от root (`user: "0:0"`) для корректной записи в bind mount.
+
 ### Сервис эмбеддингов (обязательно перед запуском стека)
 
 Модель эмбеддингов (bge-m3) вынесена из состава проекта и разворачивается
@@ -570,11 +584,14 @@ tar -xzf qdrant_backup_YYYYMMDD.tar.gz
 docker start qdrant
 ```
 
-### Backup документов
+### Backup изображений из документов
+
+Изображения, извлечённые из документов (скриншоты, таблицы, иллюстрации), хранятся в `uploads/media/`.
+Структура: `uploads/media/{source_id}/{doc_hash[:16]}/images/image_000000_<hexhash>.png`
 
 ```bash
-# Backup uploads директории
-tar -czf uploads_backup_$(date +%Y%m%d).tar.gz uploads/
+# Backup изображений из документов
+tar -czf media_backup_$(date +%Y%m%d).tar.gz uploads/media/
 ```
 
 ### Automated Backup (cron)
@@ -592,8 +609,8 @@ DATE=$(date +%Y%m%d)
 docker exec qdrant tar czf /tmp/qdrant_backup_${DATE}.tar.gz /qdrant/storage
 docker cp qdrant:/tmp/qdrant_backup_${DATE}.tar.gz ${BACKUP_DIR}/
 
-# Backup uploads
-tar -czf ${BACKUP_DIR}/uploads_${DATE}.tar.gz uploads/
+# Backup изображений из документов
+tar -czf ${BACKUP_DIR}/media_${DATE}.tar.gz uploads/media/
 
 # Удаление старых бэкапов (30 дней)
 find ${BACKUP_DIR} -name "*.tar.gz" -mtime +30 -delete
