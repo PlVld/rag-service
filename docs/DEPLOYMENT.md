@@ -162,7 +162,8 @@ open http://localhost:8000/docs
 | `/qdrant/storage` | `./qdrant_data` | База Qdrant |
 
 > ⚠️ На Windows bind mount работает только с путями внутри репозитория.
-> Файлы `uploads/media/_preview/{source_id}/{hash}/images/*.png` хранятся в `./uploads/media/`.
+> Файлы `uploads/media/{source_id}/{doc_hash[:16]}/images/*.png` хранятся в `./uploads/media/`;
+> для превью используется служебный `source_id = _preview`: `uploads/media/_preview/{doc_hash[:16]}/images/*.png`.
 > Контейнер запускается от root (`user: "0:0"`) для корректной записи в bind mount.
 
 ### Сервис эмбеддингов (обязательно перед запуском стека)
