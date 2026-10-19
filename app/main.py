@@ -91,6 +91,7 @@ app.add_middleware(ConsumeRequestBodyMiddleware)
 # Подключаем роутеры
 app.include_router(documents.upload_router)
 app.include_router(documents.search_router)
+app.include_router(documents.grouped_router)
 app.include_router(health.router)
 app.include_router(categories.router)
 app.include_router(files.router)

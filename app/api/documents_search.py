@@ -20,6 +20,15 @@ from app.api.documents_utils import (
     _matches_category_path,
 )
 from app.core.config import settings
+from app.core.exact_search import (
+    exact_candidate_limit,
+    filter_by_min_score,
+    is_exact_point,
+    merge_exact_points,
+    normalize_phrases,
+    perform_exact_search,
+    sort_hybrid_points,
+)
 from app.models.common import DocumentSearchRequest, DocumentSearchResult, GroupedDocumentResult, VersionResult
 from qdrant_client.http import models as qdrant_models
 from qdrant_client.http.exceptions import UnexpectedResponse
@@ -31,23 +40,26 @@ router = APIRouter(prefix="/v1/documents",
 logger = logging.getLogger(__name__)
 
 
-async def _perform_search(client, collection_name: str, query_vector, base_filter, cat_ids, limit: int, category_path_filter: Optional[str] = None) -> List[
+async def _perform_search(client, collection_name: str, query_vector, base_filter, cat_ids, limit: int, category_path_filter: Optional[str] = None, min_score: Optional[float] = None) -> List[
     qdrant_models.ScoredPoint]:
     """
     Выполняет поиск с использованием RRF при наличии категорий.
-    
+
     Args:
         category_path_filter: Фильтр по category_path. Если задан, результаты будут отфильтрованы
                              на стороне сервера после поиска, чтобы включить только документы,
                              чей category_path начинается с указанного значения.
+        min_score: Минимальное косинусное сходство (0..1). Передаётся в Qdrant как
+                   score_threshold, чтобы отсечь нерелевантные чанки до ранжирования.
     """
     try:
         if not cat_ids:
             response = await client.query_points(
                 collection_name=collection_name,
                 query=query_vector,
-                filter=base_filter,
+                query_filter=base_filter,
                 limit=limit,
+                score_threshold=min_score,
                 with_payload=True,
                 with_vectors=True,
             )
@@ -64,7 +76,8 @@ async def _perform_search(client, collection_name: str, query_vector, base_filte
             qdrant_models.Prefetch(
                 query=query_vector,
                 filter=base_filter,
-                limit=limit * 2
+                limit=limit * 2,
+                score_threshold=min_score,
             ),
             qdrant_models.Prefetch(
                 query=query_vector,
@@ -76,7 +89,8 @@ async def _perform_search(client, collection_name: str, query_vector, base_filte
                              )
                          ] + ([base_filter] if base_filter else [])
                     ),
-                limit=limit * 2
+                limit=limit * 2,
+                score_threshold=min_score,
             )
         ]
         response = await client.query_points(
@@ -138,14 +152,33 @@ async def search_documents(
             collection_names = [request.collection_name]
 
         # Выполняем поиск по каждой коллекции и объединяем результаты
+        exact_phrases = normalize_phrases(request.exact_phrases)
         all_search_points = []
+        exact_points = []
         for col_name in collection_names:
             try:
-                points = await _perform_search(client, col_name, query_vector, base_filter, cat_ids, request.limit * 2, category_path_filter)
+                points = await _perform_search(client, col_name, query_vector, base_filter, cat_ids, request.limit * 2, category_path_filter, request.min_score)
                 # Добавляем имя коллекции в метаданные каждой точки
                 for point in points:
                     point.payload['_collection_name'] = col_name
                 all_search_points.extend(points)
+
+                if exact_phrases:
+                    points = await perform_exact_search(
+                        client,
+                        col_name,
+                        query_vector,
+                        base_filter,
+                        exact_phrases,
+                        request.phrase_mode,
+                        exact_candidate_limit(request.limit),
+                    )
+                    if category_path_filter:
+                        points = [
+                            p for p in points
+                            if _matches_category_path(p.payload, category_path_filter)
+                        ]
+                    exact_points.extend(points)
             except ValueError as e:
                 # Если collection_name был указан явно, возвращаем ошибку
                 if request.collection_name:
@@ -156,10 +189,23 @@ async def search_documents(
         # Сортируем все результаты по релевантности и ограничиваем общее количество
         all_search_points.sort(key=lambda p: p.score, reverse=True)
         search_points = all_search_points[:request.limit * 2]
-        
+
+        # Exact-совпадения добавляем после среза семантических кандидатов:
+        # они не должны вытесняться более «похожими», но неточными чанками
+        if exact_points:
+            search_points = merge_exact_points(search_points, exact_points)
+
         # Reranking чанков на основе схожести с вектором запроса
         if search_points and query_vector is not None:
             search_points = await rerank_by_query_similarity(search_points, query_vector)
+
+        # После reranking score — косинусное сходство, поэтому порог применяем
+        # ещё раз на итоговых значениях. Exact-совпадения порог не отбрасывает.
+        search_points = filter_by_min_score(search_points, request.min_score)
+
+        # Exact-совпадения идут первыми, даже если их косинусный score ниже
+        if exact_phrases:
+            search_points = sort_hybrid_points(search_points)
         
         payload_fields_list = request.payload_fields
         # Используем переданный параметр group с приоритетом, иначе значение из request
@@ -344,6 +390,14 @@ async def _group_search_results(
             # Если payload_fields не указан, не возвращаем payload вообще
             group_payload = None
 
+        # Exact-совпадения в группе: флаг и объединение найденных фраз
+        group_matched_phrases = sorted({
+            phrase
+            for p in group_points
+            for phrase in ((p.payload or {}).get("_matched_phrases") or [])
+        })
+        group_exact_match = any(is_exact_point(p) for p in group_points)
+
         group_results.append({
             "score": group_max_score,
             "document": full_raw_text,
@@ -353,21 +407,25 @@ async def _group_search_results(
             "source_id": source_id,
             "first_chunk_index": first_chunk_index,
             "last_chunk_index": last_chunk_index,
+            "total_chunks": sample_payload.get("total_chunks") or len(sorted_all_chunks),
             "version": version,
             "raw_payload": sample_payload,
             "category_chunks": category_chunks_in_context,  # Добавляем чанки для сбора payload
+            "exact_match": group_exact_match,
+            "matched_phrases": group_matched_phrases,
         })
 
     # === Реранкинг после группировки ===
-    # Создаем векторы для сгруппированных результатов (используем max score как "вектор" для сортировки)
+    # Exact-совпадения идут первыми; внутри — по числу найденных фраз и score
+    group_results.sort(
+        key=lambda x: (
+            0 if x["exact_match"] else 1,
+            -len(x["matched_phrases"]),
+            -x["score"],
+        )
+    )
+
     if group_results and query_vector is not None:
-        # Для реранкинга групп используем max score как признак
-        # В реальности можно использовать средний score или другой агрегат
-        group_scores = [g["score"] for g in group_results]
-        
-        # Сортируем группы по score (убывание)
-        group_results.sort(key=lambda x: x["score"], reverse=True)
-        
         # Обновляем score с учетом позиции (RRF-style)
         for i, group in enumerate(group_results):
             # Простая формула: score * 0.7 + position_bonus * 0.3
@@ -386,7 +444,15 @@ async def _group_search_results(
             "score": group["score"],
             "document": group["document"],
             "collection_name": group["collection_name"],
+            "source_id": group["source_id"],
+            "first_chunk_index": group["first_chunk_index"],
+            "last_chunk_index": group["last_chunk_index"],
+            "total_chunks": group["total_chunks"],
         }
+        if group["exact_match"]:
+            result_kwargs["exact_match"] = True
+        if group["matched_phrases"]:
+            result_kwargs["matched_phrases"] = group["matched_phrases"]
         # Добавляем payload только если payload_fields указан и не пустой
         if payload_fields:
             # Собираем значения полей из всех чанков в группе
@@ -460,7 +526,14 @@ async def _return_individual_chunks(
                     "score": point.score,
                     "document": point.payload.get("raw_text", ""),
                     "collection_name": col_name,
+                    "source_id": point.payload.get("source_id"),
+                    "chunk_index": point.payload.get("chunk_index"),
+                    "total_chunks": point.payload.get("total_chunks"),
                 }
+                if point.payload.get("_exact_match"):
+                    result_kwargs["exact_match"] = True
+                if point.payload.get("_matched_phrases"):
+                    result_kwargs["matched_phrases"] = point.payload["_matched_phrases"]
                 # Добавляем payload только если payload_fields указан и не пустой
                 if payload_fields:
                     # Формируем payload
@@ -477,6 +550,12 @@ async def _return_individual_chunks(
                 unique_results[category_path] = DocumentSearchResult(**result_kwargs)
 
     results = list(unique_results.values())
+
+    # Применяем итоговый лимит после дедупликации: кандидатов запрашивается
+    # с запасом (limit * 2), и без этого среза возвращалось до 2 * limit чанков
+    limit = getattr(request, "limit", None)
+    if limit is not None:
+        results = results[:limit]
 
     # Применяем ограничение длины текста, если задано
     max_len = request.max_text_length

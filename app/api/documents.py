@@ -4,6 +4,7 @@
 """
 from app.api.documents_upload import router as upload_router, upload_documents, process_documents
 from app.api.documents_search import router as search_router, search_documents, rerank_by_query_similarity, _perform_search, _group_search_results, _return_individual_chunks
+from app.api.documents_grouped import router as grouped_router, get_grouped_text, grouped_text
 from app.api.documents_utils import (
     build_qdrant_filter,
     get_category_path_from_payload,
@@ -22,16 +23,19 @@ __all__ = [
     # Routers
     'upload_router',
     'search_router',
+    'grouped_router',
     'router',
     # Endpoints
     'upload_documents',
     'search_documents',
+    'grouped_text',
     # Functions
     'process_documents',
     'rerank_by_query_similarity',
     '_perform_search',  # добавлен для mcp_server.py
     '_group_search_results',
     '_return_individual_chunks',
+    'get_grouped_text',
     # Utils
     'build_qdrant_filter',
     'get_category_path_from_payload',

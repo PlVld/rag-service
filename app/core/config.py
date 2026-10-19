@@ -15,6 +15,17 @@ class Settings(BaseSettings):
     allowed_mcp_tools: str = Field(default="", validation_alias="ALLOWED_MCP_TOOLS", description="Comma-separated allowed MCP tools")
     default_collection: str = Field(default="documents", validation_alias="DEFAULT_COLLECTION")
 
+    # Минимальное косинусное сходство по умолчанию для поиска документов и
+    # категорий. null в запросе означает это же значение; отключить порог
+    # можно только через 0.
+    search_min_score: float = Field(
+        default=0.55,
+        validation_alias="SEARCH_MIN_SCORE",
+        ge=0,
+        le=1,
+        description="Порог score по умолчанию для семантического поиска",
+    )
+
     # MCP Authentication
     mcp_auth_enabled: bool = Field(default=True, validation_alias="MCP_AUTH_ENABLED", description="Enable authentication for MCP endpoints")
 

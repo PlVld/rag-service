@@ -9,7 +9,12 @@ from app.mcp_server import (
     _get_category_hierarchy_internal,
 )
 
-from app.mcp.tools import search_categories_tool
+from app.mcp.tools import (
+    _format_chunk_meta,
+    get_category_hierarchy_tool,
+    search_categories_tool,
+    search_documents_tool,
+)
 
 
 class TestSearchDocumentsInput:
@@ -145,6 +150,10 @@ class TestSearchDocumentsInternal:
             assert result["success"] is True
             assert len(result["data"]["results"]) == 3
             assert result["data"]["results"][0]["score"] == 0.95
+            # Метаданные документа и чанков должны доходить до MCP-слоя
+            assert result["data"]["results"][0]["source_id"] == "doc-1"
+            assert result["data"]["results"][0]["chunk_index"] == 0
+            assert result["data"]["results"][0]["total_chunks"] == 5
 
     @pytest.mark.asyncio
     async def test_search_collection_not_found(self, mock_embeddings, mock_search_categories):
@@ -394,6 +403,7 @@ class TestGetCategoryHierarchyInput:
         assert input_data.collection_name is None
         assert input_data.depth == 1
         assert input_data.categories is None
+        assert input_data.limit == 5000
 
     def test_depth_validation(self):
         """Тест валидации depth."""
@@ -402,6 +412,17 @@ class TestGetCategoryHierarchyInput:
 
         with pytest.raises(Exception):
             GetCategoryHierarchyInput(depth=11)
+
+    def test_limit_validation(self):
+        """limit должен быть положительным; null отключает ограничение."""
+        assert GetCategoryHierarchyInput(limit=10).limit == 10
+        assert GetCategoryHierarchyInput(limit=None).limit is None
+
+        with pytest.raises(Exception):
+            GetCategoryHierarchyInput(limit=0)
+
+        with pytest.raises(Exception):
+            GetCategoryHierarchyInput(limit=-1)
 
 
 class TestGetCategoryHierarchyInternal:
@@ -466,8 +487,220 @@ class TestGetCategoryHierarchyInternal:
         """Тест ошибки - неожиданная ошибка."""
         with patch("app.api.admin._get_category_hierarchy_data", new_callable=AsyncMock) as mock_data:
             mock_data.side_effect = Exception("Unknown error")
-            
+
             result = await _get_category_hierarchy_internal()
-            
+
             assert result["success"] is False
             assert result["error"]["code"] == "hierarchy_failed"
+
+
+class TestGetCategoryHierarchyTool:
+    """Тесты MCP-инструмента иерархии категорий."""
+
+    @pytest.mark.asyncio
+    async def test_passes_limit_to_internal(self):
+        with patch(
+            "app.mcp.tools._get_category_hierarchy_internal",
+            new_callable=AsyncMock,
+        ) as mock_internal:
+            mock_internal.return_value = {"success": True, "data": {"results": []}}
+
+            await get_category_hierarchy_tool(
+                GetCategoryHierarchyInput(collection_name="documents", limit=42)
+            )
+
+        assert mock_internal.await_args.kwargs["limit"] == 42
+
+    @pytest.mark.asyncio
+    async def test_reports_truncated_output(self):
+        data = {
+            "results": [
+                {
+                    "name": "coll1",
+                    "categories": [{"category_path": "A", "chunk_count": 1}],
+                    "total_categories": 3,
+                    "truncated": True,
+                },
+                {
+                    "name": "coll2",
+                    "categories": [],
+                    "total_categories": 2,
+                    "truncated": True,
+                },
+            ],
+            "limit": 1,
+            "truncated": True,
+            "total_categories": 5,
+            "shown_categories": 1,
+        }
+        with patch(
+            "app.mcp.tools._get_category_hierarchy_internal",
+            new_callable=AsyncMock,
+            return_value={"success": True, "data": data},
+        ):
+            output = await get_category_hierarchy_tool(GetCategoryHierarchyInput())
+
+        assert "показано 1 из 3 категорий" in output
+        assert "категории не показаны из-за лимита: всего 2" in output
+        assert "Показано 1 из 5 категорий (limit=1)" in output
+
+    @pytest.mark.asyncio
+    async def test_does_not_report_limit_without_truncation(self):
+        data = {
+            "results": [
+                {
+                    "name": "coll1",
+                    "categories": [{"category_path": "A", "chunk_count": 1}],
+                    "total_categories": 1,
+                    "truncated": False,
+                }
+            ],
+            "limit": 5000,
+            "truncated": False,
+            "total_categories": 1,
+            "shown_categories": 1,
+        }
+        with patch(
+            "app.mcp.tools._get_category_hierarchy_internal",
+            new_callable=AsyncMock,
+            return_value={"success": True, "data": data},
+        ):
+            output = await get_category_hierarchy_tool(GetCategoryHierarchyInput())
+
+        assert "- A (1 чанков)" in output
+        assert "limit=" not in output
+        assert "показано" not in output
+
+
+class TestSearchDocumentsToolOutput:
+    """Тесты формата ответа MCP-инструмента поиска документов."""
+
+    @pytest.mark.asyncio
+    async def test_grouped_result_shows_source_id_and_chunk_range(self):
+        """Для group=true выводятся source_id и диапазон чанков."""
+        grouped_result = {
+            "success": True,
+            "data": {
+                "results": [{
+                    "id": None,
+                    "score": 0.85,
+                    "document": "Текст фрагмента",
+                    "payload": None,
+                    "collection_name": "documents",
+                    "category_path": "Документация / API",
+                    "source_id": "doc-1",
+                    "chunk_index": None,
+                    "first_chunk_index": 2,
+                    "last_chunk_index": 4,
+                    "total_chunks": 10,
+                }]
+            },
+        }
+
+        with patch(
+            "app.mcp.tools._search_documents_internal",
+            new_callable=AsyncMock,
+            return_value=grouped_result,
+        ):
+            output = await search_documents_tool(SearchDocumentsInput(query_text="тест"))
+
+        assert "source_id=doc-1" in output
+        assert "collection_name=documents" in output
+        assert "category_path=Документация / API" in output
+        assert "чанки 2–4 из 10" in output
+        assert "Текст фрагмента" in output
+
+    @pytest.mark.asyncio
+    async def test_individual_result_shows_chunk_index(self):
+        """Для group=false выводятся source_id и номер чанка."""
+        individual_result = {
+            "success": True,
+            "data": {
+                "results": [{
+                    "id": None,
+                    "score": 0.75,
+                    "document": "Фрагмент чанка",
+                    "payload": None,
+                    "collection_name": "documents",
+                    "category_path": "Документация / API",
+                    "source_id": "doc-2",
+                    "chunk_index": 1,
+                    "first_chunk_index": None,
+                    "last_chunk_index": None,
+                    "total_chunks": 8,
+                }]
+            },
+        }
+
+        with patch(
+            "app.mcp.tools._search_documents_internal",
+            new_callable=AsyncMock,
+            return_value=individual_result,
+        ):
+            output = await search_documents_tool(
+                SearchDocumentsInput(query_text="тест", group=False)
+            )
+
+        assert "source_id=doc-2" in output
+        assert "collection_name=documents" in output
+        assert "category_path=Документация / API" in output
+        assert "чанк 1 из 8" in output
+
+    @pytest.mark.asyncio
+    async def test_missing_metadata_does_not_break_output(self):
+        """Если метаданных нет, вывод остаётся прежним."""
+        result_without_meta = {
+            "success": True,
+            "data": {
+                "results": [{
+                    "id": None,
+                    "score": 0.5,
+                    "document": "Текст",
+                    "payload": None,
+                    "collection_name": "documents",
+                    "category_path": "Документация / API",
+                    "source_id": None,
+                    "chunk_index": None,
+                    "first_chunk_index": None,
+                    "last_chunk_index": None,
+                    "total_chunks": None,
+                }]
+            },
+        }
+
+        with patch(
+            "app.mcp.tools._search_documents_internal",
+            new_callable=AsyncMock,
+            return_value=result_without_meta,
+        ):
+            output = await search_documents_tool(SearchDocumentsInput(query_text="тест"))
+
+        assert (
+            "1. [score=0.500] (collection_name=documents, "
+            "category_path=Документация / API) Текст"
+        ) in output
+
+    def test_category_path_list_is_joined(self):
+        """category_path-список выводится через ' / '."""
+        meta = _format_chunk_meta({
+            "collection_name": "documents",
+            "category_path": ["Документация", "API"],
+            "source_id": "doc-1",
+        })
+
+        assert meta == (
+            " (collection_name=documents, "
+            "category_path=Документация / API, source_id=doc-1)"
+        )
+
+    def test_exact_match_and_phrases_are_rendered(self):
+        """Exact-совпадение и найденные фразы видны в метаданных."""
+        meta = _format_chunk_meta({
+            "collection_name": "1c_helpdesk",
+            "category_path": "1С / Синтаксис",
+            "exact_match": True,
+            "matched_phrases": ["ЕСТЬNULL", "ISNULL"],
+        })
+
+        assert "exact_match=true" in meta
+        assert "matched_phrases=ЕСТЬNULL, ISNULL" in meta

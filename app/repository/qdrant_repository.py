@@ -103,6 +103,22 @@ class QdrantBatchWriter:
                         field_type=qdrant_models.PayloadSchemaType.TEXT
                     )
 
+                    # Полнотекстовый индекс raw_text - точный поиск по фразам
+                    # (параметр exact_phrases). Параметры должны совпадать
+                    # со scripts/create_text_index.py.
+                    await client.create_payload_index(
+                        collection_name=collection_name,
+                        field_name="raw_text",
+                        field_schema=qdrant_models.TextIndexParams(
+                            type=qdrant_models.TextIndexType.TEXT,
+                            tokenizer=qdrant_models.TokenizerType.WORD,
+                            lowercase=True,
+                            phrase_matching=True,
+                            min_token_len=1,
+                            max_token_len=40,
+                        )
+                    )
+
                     # Индексы для уровней категорий category_level0..9 - фильтрация по имени категории
                     for level in range(10):
                         await client.create_payload_index(

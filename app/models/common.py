@@ -1,6 +1,8 @@
-from typing import Optional, Union, Dict, Any, List
-from pydantic import BaseModel, Field, ConfigDict, model_validator, model_serializer
+from typing import Optional, Union, Dict, Any, List, Literal
+from pydantic import BaseModel, Field, ConfigDict, model_validator, model_serializer, field_validator
 import json
+
+from app.core.config import settings
 
 class DocumentCreate(BaseModel):
     model_config = ConfigDict(
@@ -145,6 +147,36 @@ class DocumentSearchRequest(BaseModel):
         le=1000,
         examples=[10]
     )
+    min_score: Optional[float] = Field(
+        default=settings.search_min_score,
+        description=(
+            "Минимальный score результата (0..1). Результаты с меньшим "
+            "косинусным сходством отбрасываются. По умолчанию 0.55; "
+            "null - тоже значение по умолчанию, 0 - без ограничения."
+        ),
+        ge=0.0,
+        le=1.0,
+        examples=[0.55, None]
+    )
+    exact_phrases: Optional[List[str]] = Field(
+        default=None,
+        max_length=10,
+        description=(
+            "Ключевые слова или фразы для точного (лексического) поиска, "
+            "например имена методов и команды. Найденные совпадения добавляются "
+            "к семантическим результатам и идут первыми. null или [] — только "
+            "семантический поиск."
+        ),
+        examples=[["ЕСТЬNULL", "ISNULL / COALESCE"], None]
+    )
+    phrase_mode: Literal["any", "all"] = Field(
+        default="any",
+        description=(
+            "Режим exact-поиска: any — достаточно любой фразы, all — должны "
+            "встретиться все фразы."
+        ),
+        examples=["any", "all"]
+    )
     collection_name: Optional[str] = Field(
         default=None,
         description="Имя коллекции в Qdrant для поиска. Если не указано, поиск выполняется по всем коллекциям, кроме служебной коллекции категорий.",
@@ -185,6 +217,64 @@ class DocumentSearchRequest(BaseModel):
                     raise ValueError("Invalid JSON in filter field")
         return values
 
+    @field_validator("min_score", mode="before")
+    @classmethod
+    def default_min_score(cls, value):
+        """null от клиента означает «значение по умолчанию», а не отключение."""
+        return settings.search_min_score if value is None else value
+
+
+class GroupedTextRequest(BaseModel):
+    """Запрос детерминированной выборки сгруппированного текста чанков."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "collection_name": "documents",
+                    "categories": ["Документация / API"],
+                    "documents": ["6ba7b810-9dad-11d1-80b4-00c04fd430c8"],
+                    "include_old_versions": False,
+                    "max_text_length": 0,
+                    "limit": 20
+                }
+            ]
+        }
+    )
+    collection_name: Optional[str] = Field(
+        default=None,
+        description="Имя коллекции Qdrant. Если не указано, выборка выполняется по всем коллекциям, кроме служебной коллекции категорий.",
+        examples=["documents"]
+    )
+    categories: Optional[List[str]] = Field(
+        default=None,
+        description="Пути категорий для отбора. Учитываются точное совпадение и вложенные категории (например, 'A / B' включает 'A / B / C').",
+        examples=[["Документация / API"]]
+    )
+    documents: Optional[List[str]] = Field(
+        default=None,
+        description="Список идентификаторов документов (source_id) для отбора.",
+        examples=[["6ba7b810-9dad-11d1-80b4-00c04fd430c8"]]
+    )
+    include_old_versions: bool = Field(
+        default=False,
+        description="Включать ли старые версии документов (is_latest=False).",
+        examples=[False]
+    )
+    max_text_length: int = Field(
+        default=0,
+        description="Максимальная длина текста каждой группы (0 = без ограничений).",
+        ge=0,
+        examples=[0, 2000]
+    )
+    limit: int = Field(
+        default=20,
+        description="Максимальное количество групп (документ + категория).",
+        ge=1,
+        le=1000,
+        examples=[20]
+    )
+
 
 class DocumentSearchResult(BaseModel):
     model_config = ConfigDict(
@@ -205,7 +295,20 @@ class DocumentSearchResult(BaseModel):
     document: str
     payload: Optional[Dict[str, Any]] = Field(default=None, description="Метаданные чанка. Включается только если payload_fields указан.")
     collection_name: str = Field(..., description="Имя коллекции, в которой найден чанк")
-    
+    source_id: Optional[str] = Field(default=None, description="Идентификатор документа (source_id)")
+    chunk_index: Optional[int] = Field(default=None, description="Номер чанка (для результатов без группировки)")
+    first_chunk_index: Optional[int] = Field(default=None, description="Первый номер чанка в тексте (для сгруппированных результатов)")
+    last_chunk_index: Optional[int] = Field(default=None, description="Последний номер чанка в тексте (для сгруппированных результатов)")
+    total_chunks: Optional[int] = Field(default=None, description="Общее количество чанков в документе")
+    exact_match: Optional[bool] = Field(
+        default=None,
+        description="Найден ли результат по точной фразе (exact_phrases)"
+    )
+    matched_phrases: Optional[List[str]] = Field(
+        default=None,
+        description="Какие из exact_phrases встретились в тексте"
+    )
+
     @model_serializer
     def serialize_model(self):
         """Сериализует модель, исключая поля со значением None."""

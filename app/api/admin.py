@@ -4,6 +4,7 @@ from app.auth import verify_api_key
 from pydantic import BaseModel, Field
 from qdrant_client.http import models as qdrant_models
 from app.api.health import get_client
+from app.api.categories import sync_categories_from_collection
 from app.core.config import settings
 from app.openapi_md.loader import load_openapi_md
 import logging
@@ -33,14 +34,30 @@ class CategoryHierarchyRequest(BaseModel):
     depth: int = Field(0, ge=0, le=10, description="Количество уровней для получения (0 - только список коллекций без категорий, 1-10 - иерархия категорий). Максимальное значение: 10."),
     categories: Optional[List[str]] = Field(None, description="Массив полных путей категорий (опционально). Разделитель уровней - \" / \", также принимается \"/\" без пробелов. Если указаны, возвращаются только коллекции с этими категориями.")
 
+    limit: Optional[int] = Field(
+        5000,
+        ge=1,
+        description=(
+            "Максимальное суммарное количество категорий в ответе. "
+            "Коллекции обходятся по порядку, пока не исчерпан лимит. "
+            "null - без ограничения."
+        ),
+    )
+
 
 class CollectionCategoryHierarchy(BaseModel):
     name: str
     categories: List[CategoryChunkCount]
+    total_categories: int = Field(0, description="Категорий в коллекции до применения limit")
+    truncated: bool = Field(False, description="Список категорий коллекции обрезан лимитом")
 
 
 class CategoryHierarchyResponse(BaseModel):
     results: List[CollectionCategoryHierarchy]
+    limit: Optional[int] = Field(None, description="Лимит на весь ответ; null - без ограничения")
+    truncated: bool = Field(False, description="Ответ обрезан лимитом")
+    total_categories: int = Field(0, description="Всего категорий до применения limit")
+    shown_categories: int = Field(0, description="Категорий в ответе после применения limit")
 
 
 class HnswConfigRequest(BaseModel):
@@ -52,6 +69,52 @@ class PayloadIndexRequest(BaseModel):
     collection_name: str
     field_name: str
     field_type: qdrant_models.PayloadSchemaType = qdrant_models.PayloadSchemaType.KEYWORD
+
+
+class CategorySyncRequest(BaseModel):
+    collection_name: str = Field(
+        ...,
+        min_length=1,
+        description="Имя коллекции-источника, из которой берутся paths категорий",
+        examples=["1c_integration"],
+    )
+    include_old_versions: bool = Field(
+        False,
+        description="Учитывать точки с is_latest=false (по умолчанию только актуальные)",
+    )
+    dry_run: bool = Field(
+        False,
+        description="Только посчитать изменения, не создавать эмбеддинги и не писать в Qdrant",
+    )
+
+
+class CategorySyncResponse(BaseModel):
+    collection_name: str
+    dry_run: bool
+    include_old_versions: bool
+    scan_mode: str = Field(..., description="Способ чтения путей: scroll")
+    points_scanned: int = Field(..., description="Прочитано точек коллекции-источника")
+    source_category_paths: int = Field(..., description="Уникальных путей в коллекции-источнике")
+    category_nodes: int = Field(..., description="Узлов с учётом всех родителей")
+    parent_nodes: int = Field(..., description="Узлов, которых нет среди путей источника")
+    missing: int = Field(..., description="Узлов отсутствует в categories")
+    outdated: int = Field(..., description="Узлов с некорректным payload")
+    unchanged: int = Field(..., description="Узлов без изменений")
+    created: int = Field(..., description="Создано узлов (0 при dry_run)")
+    updated: int = Field(..., description="Обновлено узлов (0 при dry_run)")
+    embedded: int = Field(..., description="Посчитано эмбеддингов (0 при dry_run)")
+    points_with_wrong_category_ids: int = Field(
+        ...,
+        description="Точек, у которых category_id_levelN не совпадает с ID узлов для их пути",
+    )
+    points_updated: int = Field(
+        ...,
+        description="Точек с исправленными category_id_levelN (0 при dry_run)",
+    )
+    duration_ms: int
+    sample_missing: List[str] = Field(default_factory=list)
+    sample_outdated: List[str] = Field(default_factory=list)
+    sample_wrong_category_ids: List[str] = Field(default_factory=list)
 
 
 @router.post("/hnsw", summary="Включить/выключить HNSW-индекс", description=load_openapi_md("admin_hnsw.md"))
@@ -186,14 +249,74 @@ async def _get_category_paths_by_ids(client, category_ids: List[str]) -> Dict[st
         return {}
 
 
+def _apply_category_limit(
+    collections_result: List[Dict[str, Any]],
+    limit: Optional[int],
+) -> Dict[str, Any]:
+    """Ограничивает суммарное количество категорий в ответе.
+
+    Лимит общий на весь ответ: коллекции обходятся по порядку, пока не
+    исчерпан бюджет. В каждой коллекции проставляются ``total_categories``
+    (сколько категорий было до обрезки) и ``truncated``.
+    """
+    total = sum(len(coll.get("categories", [])) for coll in collections_result)
+    shown = 0
+    truncated = False
+
+    if limit is None:
+        for coll in collections_result:
+            cats = coll.get("categories", [])
+            coll["total_categories"] = len(cats)
+            coll["truncated"] = False
+            shown += len(cats)
+        return {
+            "limit": None,
+            "truncated": False,
+            "total_categories": total,
+            "shown_categories": shown,
+        }
+
+    remaining = max(limit, 0)
+    for coll in collections_result:
+        cats = coll.get("categories", [])
+        coll["total_categories"] = len(cats)
+
+        if remaining <= 0:
+            coll["categories"] = []
+            coll["truncated"] = bool(cats)
+        elif len(cats) > remaining:
+            coll["categories"] = cats[:remaining]
+            coll["truncated"] = True
+            shown += remaining
+            remaining = 0
+        else:
+            coll["categories"] = cats
+            coll["truncated"] = False
+            shown += len(cats)
+            remaining -= len(cats)
+
+        truncated = truncated or coll["truncated"]
+
+    return {
+        "limit": limit,
+        "truncated": truncated,
+        "total_categories": total,
+        "shown_categories": shown,
+    }
+
+
 async def _get_category_hierarchy_data(
     collection_name: Optional[str] = None,
     depth: int = 1,
     categories: Optional[List[str]] = None,
+    limit: Optional[int] = 5000,
 ) -> Dict[str, Any]:
     """
     Внутренняя функция получения иерархии категорий (без FastAPI зависимостей).
     Используется как для API endpoint, так и для MCP tool.
+
+    ``limit`` ограничивает суммарное число категорий в ответе (None - без
+    ограничения). Коллекции обходятся по порядку, пока не исчерпан лимит.
     """
     from app.api.health import get_client
     from app.core.config import settings
@@ -218,7 +341,11 @@ async def _get_category_hierarchy_data(
                 "results": [
                     {"name": name, "categories": []}
                     for name in collection_names
-                ]
+                ],
+                "limit": limit,
+                "truncated": False,
+                "total_categories": 0,
+                "shown_categories": 0,
             }
 
         # Если указаны categories, нормализуем разделители и логируем для отладки
@@ -316,7 +443,7 @@ async def _get_category_hierarchy_data(
                 "categories": results
             })
 
-        return {"results": collections_result}
+        return {"results": collections_result, **_apply_category_limit(collections_result, limit)}
 
     except Exception as e:
         logger.exception(f"Failed to get category hierarchy: {e}")
@@ -338,8 +465,9 @@ async def get_category_hierarchy(request: CategoryHierarchyRequest):
             collection_name=request.collection_name,
             depth=request.depth,
             categories=request.categories,
+            limit=request.limit,
         )
-        
+
         # Преобразуем результат в response model
         collections_result = []
         for coll in result["results"]:
@@ -351,12 +479,57 @@ async def get_category_hierarchy(request: CategoryHierarchyRequest):
                 ))
             collections_result.append(CollectionCategoryHierarchy(
                 name=coll["name"],
-                categories=categories_list
+                categories=categories_list,
+                total_categories=coll.get("total_categories", len(categories_list)),
+                truncated=coll.get("truncated", False),
             ))
-        
-        return CategoryHierarchyResponse(results=collections_result)
+
+        return CategoryHierarchyResponse(
+            results=collections_result,
+            limit=result.get("limit"),
+            truncated=result.get("truncated", False),
+            total_categories=result.get("total_categories", 0),
+            shown_categories=result.get("shown_categories", 0),
+        )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.exception(f"Failed to get category hierarchy: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/categories/sync",
+             summary="Актуализировать категории из коллекции",
+             description=load_openapi_md("admin_categories_sync.md"),
+             response_model=CategorySyncResponse)
+async def sync_categories(request: CategorySyncRequest):
+    """Создаёт/исправляет узлы коллекции categories по путям коллекции-источника.
+
+    Используется после переноса коллекции с другой машины. Операция
+    идемпотентна и не удаляет существующие категории.
+    """
+    if request.collection_name == settings.category_collection:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Collection '{request.collection_name}' is the target "
+                "category collection"
+            ),
+        )
+
+    try:
+        result = await sync_categories_from_collection(
+            collection_name=request.collection_name,
+            include_old_versions=request.include_old_versions,
+            dry_run=request.dry_run,
+        )
+        return CategorySyncResponse(**result)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.exception(
+            "Failed to sync categories from %s: %s",
+            request.collection_name,
+            e,
+        )
         raise HTTPException(status_code=500, detail=str(e))

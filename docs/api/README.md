@@ -31,6 +31,7 @@ Authorization: Bearer <your-api-key>
   - [Управление коллекциями](#управление-коллекциями)
   - [Создание индексов](#создание-индексов)
   - [Настройка HNSW](#настройка-hnsw)
+  - [Актуализация категорий из коллекции](#актуализация-категорий-из-коллекции)
 - [Health Check](#health-check)
 - [Форматы ответов](#форматы-ответов)
 - [Коды ошибок](#коды-ошибок)
@@ -123,6 +124,9 @@ curl -X POST http://localhost:8000/v1/documents/upload \
 | `query_text` | string | ✅ | — | Текст запроса |
 | `collection_name` | string | ❌ | — | Имя коллекции (если не указано, ищет по всем) |
 | `limit` | integer | ❌ | 10 | Количество результатов (1-1000) |
+| `min_score` | number | ❌ | 0.55 | Минимальный косинусный score (0–1); `null` — тоже 0.55, `0` — без ограничения |
+| `exact_phrases` | array | ❌ | — | До 10 слов/фраз для точного поиска по `raw_text` |
+| `phrase_mode` | string | ❌ | any | `any` — любая фраза, `all` — все фразы |
 | `filter` | object | ❌ | — | Фильтр Qdrant |
 | `include_old_versions` | boolean | ❌ | false | Включать старые версии документов |
 | `max_text_length` | integer | ❌ | 0 | Максимальная длина текста (0 = без ограничений) |
@@ -214,6 +218,9 @@ curl -X POST http://localhost:8000/api/documents/search/grouped \
 |----------|-----|-------------|-------------|----------|
 | `query_text` | string | ✅ | — | Текст запроса |
 | `limit` | integer | ❌ | 10 | Количество результатов (1-100) |
+| `min_score` | number | ❌ | 0.55 | Минимальный косинусный score категории (0–1); `null` — тоже 0.55, `0` — без ограничения |
+| `exact_phrases` | array | ❌ | — | До 10 слов/фраз для точного поиска по пути категории |
+| `phrase_mode` | string | ❌ | any | `any` — любая фраза, `all` — все фразы |
 | `grouped` | boolean | ❌ | false | Группировать по коллекциям |
 | `fields` | array | ❌ | — | Поля для возврата |
 
@@ -417,6 +424,79 @@ curl -X POST http://localhost:8000/api/admin/hnsw \
     "ef_construct": 100
   }'
 ```
+
+---
+
+### Актуализация категорий из коллекции
+
+**POST** `/v1/admin/categories/sync`
+
+Создаёт и исправляет узлы коллекции `categories` по путям категорий
+указанной коллекции. Используется после переноса коллекций с другой машины.
+Дополнительно приводит `category_id_levelN` в чанках коллекции-источника
+к детерминированным ID узлов для их пути — это чинит рассинхронизацию ID,
+когда пути категорий совпадают, а ID взяты из прежней коллекции `categories`.
+Операция идемпотентна, существующие категории не удаляются.
+
+#### Параметры
+
+| Параметр | Тип | Обязательный | По умолчанию | Описание |
+|----------|-----|--------------|--------------|----------|
+| `collection_name` | string | ✅ | — | Коллекция-источник (не `categories`) |
+| `include_old_versions` | boolean | ❌ | `false` | Учитывать точки с `is_latest=false` |
+| `dry_run` | boolean | ❌ | `false` | Только посчитать изменения, без записи |
+
+#### Пример запроса
+
+```bash
+curl -X POST http://localhost:8000/v1/admin/categories/sync \
+  -H "Authorization: Bearer your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "collection_name": "1c_integration",
+    "dry_run": true
+  }'
+```
+
+#### Пример ответа
+
+```json
+{
+  "collection_name": "1c_integration",
+  "dry_run": true,
+  "include_old_versions": false,
+  "scan_mode": "scroll",
+  "points_scanned": 27273,
+  "source_category_paths": 314,
+  "category_nodes": 402,
+  "parent_nodes": 88,
+  "missing": 12,
+  "outdated": 3,
+  "unchanged": 387,
+  "created": 0,
+  "updated": 0,
+  "embedded": 0,
+  "points_with_wrong_category_ids": 1024,
+  "points_updated": 0,
+  "duration_ms": 145,
+  "sample_missing": ["Интеграция / API / Методы / Новый метод"],
+  "sample_outdated": ["Интеграция / API / Методы"],
+  "sample_wrong_category_ids": ["Интеграция / API / Методы (512 точек)"]
+}
+```
+
+При `dry_run=false` поля `created`, `updated` и `embedded` содержат фактические
+значения, а `missing`/`outdated` — сколько узлов было создано/обновлено.
+`points_with_wrong_category_ids` — сколько чанков имели расхождение в ID
+категорий, `points_updated` — сколько из них исправлено (при `dry_run`
+всегда `0`). Точки без `category_levelN` не изменяются: путь из
+`category_path` неоднозначен, если название уровня содержит ` / `.
+
+#### Ошибки
+
+- `400` — `collection_name` совпадает с коллекцией категорий
+- `404` — коллекция-источник не найдена
+- `500` — ошибка Qdrant или эмбеддингов
 
 ---
 

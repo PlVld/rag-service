@@ -9,6 +9,11 @@
   - Разделитель уровней - ` / ` (пробел-слэш-пробел), также принимается `/` без пробелов
   - Если указаны - возвращает только коллекции, содержащие эти категории
   - Если не указаны - возвращает все категории для указанных/всех коллекций
+- `limit`: максимальное суммарное количество категорий в ответе (по умолчанию 5000)
+  - Коллекции обходятся по порядку, пока не исчерпан лимит
+  - `null` - без ограничения
+  - При обрезке `truncated=true`, в каждой коллекции заполняются
+    `total_categories` и `truncated`
 
 **Логика:**
 - Если `categories` не указаны и `depth=0` - возвращает список коллекций без категорий
@@ -20,11 +25,31 @@
 ```json
 {
   "results": [
-    {"name": "collection1", "categories": [
+    {"name": "collection1", "total_categories": 2, "truncated": false, "categories": [
       {"category_path": "Docs", "chunk_count": 150},
       {"category_path": "API", "chunk_count": 50}
     ]}
-  ]
+  ],
+  "limit": 5000,
+  "truncated": false,
+  "total_categories": 2,
+  "shown_categories": 2
+}
+```
+
+**Пример ответа при обрезке (limit=1):**
+```json
+{
+  "results": [
+    {"name": "collection1", "total_categories": 2, "truncated": true, "categories": [
+      {"category_path": "API", "chunk_count": 50}
+    ]},
+    {"name": "collection2", "total_categories": 3, "truncated": true, "categories": []}
+  ],
+  "limit": 1,
+  "truncated": true,
+  "total_categories": 5,
+  "shown_categories": 1
 }
 ```
 
@@ -32,9 +57,13 @@
 ```json
 {
   "results": [
-    {"name": "collection1", "categories": []},
-    {"name": "collection2", "categories": []}
-  ]
+    {"name": "collection1", "total_categories": 0, "truncated": false, "categories": []},
+    {"name": "collection2", "total_categories": 0, "truncated": false, "categories": []}
+  ],
+  "limit": 5000,
+  "truncated": false,
+  "total_categories": 0,
+  "shown_categories": 0
 }
 ```
 

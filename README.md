@@ -224,6 +224,7 @@ docker-compose -f docker-compose.yml -f Dockerfile.cpu up -d
 | POST | `/api/admin/collections` | Управление коллекциями |
 | POST | `/api/admin/index` | Создание индексов |
 | POST | `/api/admin/hnsw` | Настройка HNSW индекса |
+| POST | `/v1/admin/categories/sync` | Актуализация категорий по перенесённой коллекции |
 
 ### Интерактивная документация
 
@@ -240,6 +241,7 @@ docker-compose -f docker-compose.yml -f Dockerfile.cpu up -d
 1. **`search_documents_tool`** — семантический поиск по документам
 2. **`search_categories_tool`** — поиск категорий по запросу
 3. **`get_category_hierarchy_tool`** — получение иерархии категорий
+4. **`get_grouped_text_tool`** — сгруппированный текст чанков с отбором по коллекции, категориям и документам
 
 ### Подключение
 
