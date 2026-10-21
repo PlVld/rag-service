@@ -11,6 +11,15 @@
 
 ### Добавлено
 
+- **OpenAI-совместимый API эмбеддингов (vLLM и др.)**
+  - Помимо TEI (`POST /embed`) поддерживается `POST /v1/embeddings` с
+    Bearer-ключом; формат выбирается автоматически (`auto`: openai при заданном
+    ключе, иначе tei) или явно через `EMBEDDINGS_API_STYLE`
+  - Новые переменные: `EMBEDDINGS_API_STYLE`, `EMBEDDINGS_API_KEY`,
+    `EMBEDDINGS_API_MODEL` (имя модели в API, у vLLM — `bge-m3`)
+  - Health-проверка и определение размерности работают для обоих форматов;
+    ошибки API пробрасываются с телом ответа
+
 - **Гибридный exact-поиск по ключевым словам и фразам**
   - `POST /v1/documents/search`, `search_documents_tool` (MCP),
     `POST /v1/categories/search` и `search_categories_tool` (MCP) получили

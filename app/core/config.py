@@ -55,11 +55,20 @@ class Settings(BaseSettings):
     )
     use_gpu: bool = Field(default=True, validation_alias="USE_GPU")
 
-    # Удалённый сервис эмбеддингов (text-embeddings-inference).
+    # Удалённый сервис эмбеддингов.
     # Если задан URL, векторы считаются через API, и модель в процессе не загружается.
     # Если пусто — работает локальный режим sentence-transformers.
     embeddings_api_url: str = Field(default="", validation_alias="EMBEDDINGS_API_URL")
     embeddings_api_timeout: float = Field(default=120.0, validation_alias="EMBEDDINGS_API_TIMEOUT", gt=0)
+    # Формат API:
+    #   auto   — openai, если задан EMBEDDINGS_API_KEY, иначе tei
+    #   tei    — Hugging Face text-embeddings-inference: POST /embed
+    #   openai — OpenAI-совместимый API (vLLM и др.): POST /v1/embeddings с Bearer-ключом
+    embeddings_api_style: str = Field(default="auto", validation_alias="EMBEDDINGS_API_STYLE")
+    embeddings_api_key: str = Field(default="", validation_alias="EMBEDDINGS_API_KEY")
+    # Имя модели в удалённом API. У vLLM обычно без префикса провайдера (bge-m3).
+    # Если пусто — используется EMBEDDING_MODEL.
+    embeddings_api_model: str = Field(default="", validation_alias="EMBEDDINGS_API_MODEL")
 
     # Logging
     log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
@@ -67,6 +76,17 @@ class Settings(BaseSettings):
     # Service
     service_host: str = Field(default="0.0.0.0", validation_alias="SERVICE_HOST")
     service_port: int = Field(default=8000, validation_alias="SERVICE_PORT", ge=1, le=65535)
+
+    @field_validator("embeddings_api_style")
+    @classmethod
+    def validate_embeddings_api_style(cls, v: str) -> str:
+        valid_styles = {"auto", "tei", "openai"}
+        style = (v or "auto").strip().lower()
+        if style not in valid_styles:
+            raise ValueError(
+                f"Invalid EMBEDDINGS_API_STYLE '{v}'. Must be one of: {', '.join(sorted(valid_styles))}"
+            )
+        return style
 
     @field_validator("log_level")
     @classmethod

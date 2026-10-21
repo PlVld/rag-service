@@ -209,6 +209,29 @@ docker run -d --name tei-bge-m3 --restart unless-stopped \
 EMBEDDINGS_API_URL=http://<host-с-моделью>:8081
 ```
 
+**OpenAI-совместимый API (vLLM, LM Studio, Ollama и др.)**
+
+Сервис умеет работать не только с TEI, но и с OpenAI-совместимым
+`POST /v1/embeddings`. Режим выбирается автоматически: при заданном
+`EMBEDDINGS_API_KEY` используется OpenAI-формат, иначе TEI. Формат можно
+зафиксировать явно через `EMBEDDINGS_API_STYLE`.
+
+```env
+EMBEDDINGS_API_URL=http://<host-с-моделью>
+EMBEDDINGS_API_STYLE=openai
+EMBEDDINGS_API_MODEL=bge-m3
+EMBEDDINGS_API_KEY=<ключ>
+EMBEDDINGS_API_TIMEOUT=120
+```
+
+> Имя модели должно совпадать с тем, что отдаёт `/v1/models` удалённого
+> сервера. У vLLM это обычно имя без префикса провайдера (`bge-m3`,
+> а не `BAAI/bge-m3`).
+
+Важно: если модель в удалённом API — `bge-m3` (или другой чекпойнт
+`BAAI/bge-m3`), размерность векторов та же (1024) и переиндексировать
+Qdrant не нужно. При смене модели на другую коллекции придётся пересоздать.
+
 ### Development
 
 ```bash

@@ -283,7 +283,12 @@ Authorization: Bearer <RAG_SERVICE_API_KEY>
 | `QDRANT_URL` | `http://localhost:6333` | URL Qdrant |
 | `QDRANT_API_KEY` | — | API-ключ Qdrant |
 | `RAG_SERVICE_API_KEY` | — | API-ключ сервиса (обязательный) |
-| `EMBEDDING_MODEL` | `BAAI/bge-m3` | Модель эмбеддингов |
+| `EMBEDDING_MODEL` | `BAAI/bge-m3` | Модель эмбеддингов (локальный режим) |
+| `EMBEDDINGS_API_URL` | — | URL сервиса эмбеддингов (пусто = локальная модель) |
+| `EMBEDDINGS_API_STYLE` | `auto` | Формат API: `auto`, `tei` (POST `/embed`) или `openai` (POST `/v1/embeddings`) |
+| `EMBEDDINGS_API_MODEL` | — | Имя модели в удалённом API (у vLLM: `bge-m3`) |
+| `EMBEDDINGS_API_KEY` | — | Bearer-ключ для OpenAI-совместимого API |
+| `EMBEDDINGS_API_TIMEOUT` | `120` | Таймаут запросов к API, сек |
 | `USE_GPU` | `false` | Использовать GPU |
 | `SERVICE_PORT` | `8000` | Порт сервиса |
 | `CHUNK_SIZE` | `1024` | Размер чанка (символы) |

@@ -16,23 +16,97 @@ REMOTE_EMBED_BATCH_SIZE = 32
 
 
 # =============================================================================
-# Удалённый режим (text-embeddings-inference и совместимые API)
+# Удалённый режим (text-embeddings-inference и OpenAI-совместимые API)
 # =============================================================================
 def remote_mode_enabled() -> bool:
     """True, если эмбеддинги считаются через удалённый сервис."""
     return bool(settings.embeddings_api_url)
 
 
+def _remote_style() -> str:
+    """Формат удалённого API: tei или openai."""
+    style = (settings.embeddings_api_style or "auto").strip().lower()
+    if style == "auto":
+        return "openai" if _auth_headers() else "tei"
+    return style
+
+
+def _remote_base_url() -> str:
+    return settings.embeddings_api_url.rstrip("/")
+
+
+def _remote_embed_url() -> str:
+    """URL эндпоинта векторизации."""
+    base = _remote_base_url()
+    if _remote_style() == "openai":
+        # Принимаем и http://host, и http://host/v1
+        return base + "/embeddings" if base.endswith("/v1") else base + "/v1/embeddings"
+    return base + "/embed"
+
+
+def _remote_health_url() -> str:
+    """Health-эндпоинт всегда у корня сервиса (не под /v1)."""
+    base = _remote_base_url()
+    if base.endswith("/v1"):
+        base = base[:-3]
+    return base + "/health"
+
+
+def _remote_models_url() -> str:
+    """Список моделей — используется как fallback для проверки готовности."""
+    base = _remote_base_url()
+    return base + "/models" if base.endswith("/v1") else base + "/v1/models"
+
+
+def _remote_model_name() -> str:
+    """Имя модели в удалённом API (у vLLM — без префикса, например bge-m3)."""
+    return (settings.embeddings_api_model or settings.embedding_model).strip()
+
+
+def _auth_headers() -> dict:
+    key = (settings.embeddings_api_key or "").strip()
+    return {"Authorization": f"Bearer {key}"} if key else {}
+
+
+def _embed_payload(texts: List[str]) -> dict:
+    if _remote_style() == "openai":
+        return {"model": _remote_model_name(), "input": texts}
+    return {"inputs": texts}
+
+
+def _parse_embed_response(data) -> List[List[float]]:
+    if _remote_style() == "openai":
+        items = data.get("data", []) if isinstance(data, dict) else []
+        # OpenAI-совместимые API не гарантируют порядок — сортируем по index
+        items = sorted(items, key=lambda item: item.get("index", 0))
+        return [item["embedding"] for item in items]
+    return data
+
+
+def _raise_for_status(resp: httpx.Response) -> None:
+    """Пробрасывает ошибку API вместе с телом ответа (для диагностики)."""
+    if resp.status_code >= 400:
+        body = resp.text[:500]
+        raise RuntimeError(f"Embeddings API error {resp.status_code}: {body}")
+
+
 _http_client: Optional[httpx.AsyncClient] = None
+_http_client_loop: Optional[asyncio.AbstractEventLoop] = None
 
 
 def _get_http_client() -> httpx.AsyncClient:
-    global _http_client
-    if _http_client is None or _http_client.is_closed:
+    global _http_client, _http_client_loop
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    # Пересоздаём клиент, если сменился event loop (например, между asyncio.run)
+    if _http_client is None or _http_client.is_closed or _http_client_loop is not loop:
         _http_client = httpx.AsyncClient(
-            base_url=settings.embeddings_api_url,
             timeout=httpx.Timeout(settings.embeddings_api_timeout),
+            headers=_auth_headers(),
         )
+        _http_client_loop = loop
     return _http_client
 
 
@@ -45,14 +119,20 @@ async def close_http_client() -> None:
 
 
 async def _remote_embed(texts: List[str]) -> List[List[float]]:
-    """Кодирует список текстов через /embed, разбивая на батчи."""
+    """Кодирует список текстов через удалённый API, разбивая на батчи."""
     client = _get_http_client()
+    url = _remote_embed_url()
     result: List[List[float]] = []
     for i in range(0, len(texts), REMOTE_EMBED_BATCH_SIZE):
         chunk = texts[i:i + REMOTE_EMBED_BATCH_SIZE]
-        resp = await client.post("/embed", json={"inputs": chunk})
-        resp.raise_for_status()
-        result.extend(resp.json())
+        resp = await client.post(url, json=_embed_payload(chunk))
+        _raise_for_status(resp)
+        vectors = _parse_embed_response(resp.json())
+        if len(vectors) != len(chunk):
+            raise RuntimeError(
+                f"Embeddings API returned {len(vectors)} vectors for {len(chunk)} inputs"
+            )
+        result.extend(vectors)
     return result
 
 
@@ -60,8 +140,15 @@ async def check_embedding_ready() -> bool:
     """Проверяет готовность модели эмбеддингов (удалённой или локальной)."""
     if remote_mode_enabled():
         try:
-            resp = await _get_http_client().get("/health")
-            return resp.status_code == 200
+            client = _get_http_client()
+            resp = await client.get(_remote_health_url())
+            if resp.status_code == 200:
+                return True
+            # У части OpenAI-совместимых серверов нет /health
+            if _remote_style() == "openai":
+                resp = await client.get(_remote_models_url())
+                return resp.status_code == 200
+            return False
         except Exception:
             return False
     try:
@@ -75,12 +162,15 @@ async def check_embedding_ready() -> bool:
 def _remote_dimension() -> int:
     """Определяет размерность вектора пробным запросом (кэшируется)."""
     with httpx.Client(
-        base_url=settings.embeddings_api_url,
-        timeout=settings.embeddings_api_timeout,
+        timeout=httpx.Timeout(settings.embeddings_api_timeout),
+        headers=_auth_headers(),
     ) as client:
-        resp = client.post("/embed", json={"inputs": ["dimension probe"]})
-        resp.raise_for_status()
-        return len(resp.json()[0])
+        resp = client.post(_remote_embed_url(), json=_embed_payload(["dimension probe"]))
+        _raise_for_status(resp)
+        vectors = _parse_embed_response(resp.json())
+        if not vectors:
+            raise RuntimeError("Embeddings API returned no vectors")
+        return len(vectors[0])
 
 
 # =============================================================================
@@ -146,11 +236,22 @@ def initialize_model(online: bool = False):
                       или удалённый API недоступен.
     """
     if remote_mode_enabled():
-        with httpx.Client(base_url=settings.embeddings_api_url, timeout=10.0) as client:
-            resp = client.get("/health")
-            if resp.status_code != 200:
-                raise RuntimeError(f"Embeddings API is not ready: HTTP {resp.status_code}")
-        logger.info(f"Embeddings API is ready: {settings.embeddings_api_url}")
+        try:
+            with httpx.Client(timeout=10.0, headers=_auth_headers()) as client:
+                resp = client.get(_remote_health_url())
+                ready = resp.status_code == 200
+                # У части OpenAI-совместимых серверов нет /health
+                if not ready and _remote_style() == "openai":
+                    resp = client.get(_remote_models_url())
+                    ready = resp.status_code == 200
+        except httpx.HTTPError as e:
+            raise RuntimeError(f"Embeddings API is not available: {e}") from e
+        if not ready:
+            raise RuntimeError(f"Embeddings API is not ready: HTTP {resp.status_code}")
+        logger.info(
+            f"Embeddings API is ready: {_remote_base_url()} "
+            f"(style={_remote_style()}, model={_remote_model_name()})"
+        )
         return None
 
     from sentence_transformers import SentenceTransformer
